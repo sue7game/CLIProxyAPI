@@ -711,6 +711,8 @@ func (s *Service) Run(ctx context.Context) error {
 		interval := 15 * time.Minute
 		s.coreManager.StartAutoRefresh(context.Background(), interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
+		s.coreManager.StartAuto429Recheck(context.Background(), 0)
+		log.Infof("core auth auto-429 recovery started (interval=%s)", 30*time.Second)
 	}
 
 	select {
@@ -747,6 +749,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			s.watcherCancel()
 		}
 		if s.coreManager != nil {
+			s.coreManager.StopAuto429Recheck()
 			s.coreManager.StopAutoRefresh()
 		}
 		if s.watcher != nil {

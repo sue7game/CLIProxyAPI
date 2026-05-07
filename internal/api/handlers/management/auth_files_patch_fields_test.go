@@ -162,3 +162,220 @@ func TestPatchAuthFileFields_HeadersEmptyMapIsNoop(t *testing.T) {
 		t.Fatalf("metadata.headers.X-Kee = %#v, want %q", got, "1")
 	}
 }
+
+func TestPatchAuthFileFields_UpdatesAuto429Config(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	manager := coreauth.NewManager(&memoryAuthStore{}, nil, nil)
+	record := &coreauth.Auth{
+		ID:       "auto429.json",
+		FileName: "auto429.json",
+		Provider: "claude",
+		Attributes: map[string]string{
+			"path": "/tmp/auto429.json",
+		},
+		Metadata: map[string]any{"type": "claude"},
+	}
+	if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
+		t.Fatalf("failed to register auth record: %v", errRegister)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	body := `{"name":"auto429.json","auto_disable_429_threshold":20,"auto_429_recheck_interval":600}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+	h.PatchAuthFileFields(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	updated, ok := manager.GetByID("auto429.json")
+	if !ok || updated == nil {
+		t.Fatalf("expected auth record to exist after patch")
+	}
+	if got := updated.AutoDisable429Threshold(); got != 20 {
+		t.Fatalf("auto_disable_429_threshold = %d, want 20", got)
+	}
+	if got := updated.Auto429RecheckIntervalSeconds(); got != 600 {
+		t.Fatalf("auto_429_recheck_interval = %d, want 600", got)
+	}
+}
+
+func TestPatchAuthFileFields_UpdatesDisableCooling(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	manager := coreauth.NewManager(&memoryAuthStore{}, nil, nil)
+	record := &coreauth.Auth{
+		ID:       "disable-cooling.json",
+		FileName: "disable-cooling.json",
+		Provider: "claude",
+		Attributes: map[string]string{
+			"path": "/tmp/disable-cooling.json",
+		},
+		Metadata: map[string]any{
+			"type":            "claude",
+			"disable-cooling": true,
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
+		t.Fatalf("failed to register auth record: %v", errRegister)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	body := `{"name":"disable-cooling.json","disable_cooling":false}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+	h.PatchAuthFileFields(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	updated, ok := manager.GetByID("disable-cooling.json")
+	if !ok || updated == nil {
+		t.Fatalf("expected auth record to exist after patch")
+	}
+	got, ok := updated.DisableCoolingOverride()
+	if !ok || got {
+		t.Fatalf("disable_cooling override = %v ok=%v, want false ok=true", got, ok)
+	}
+	if got := updated.Metadata["disable_cooling"]; got != false {
+		t.Fatalf("metadata.disable_cooling = %#v, want false", got)
+	}
+	if _, ok := updated.Metadata["disable-cooling"]; ok {
+		t.Fatalf("expected legacy metadata.disable-cooling to be removed")
+	}
+	if got := updated.Attributes["disable_cooling"]; got != "false" {
+		t.Fatalf("attrs.disable_cooling = %q, want false", got)
+	}
+	if _, ok := updated.Attributes["disable-cooling"]; ok {
+		t.Fatalf("expected legacy attrs.disable-cooling to be removed")
+	}
+}
+
+func TestPatchAuthFileFields_DisablingAuto429RestoresRuntimeDisable(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	manager := coreauth.NewManager(&memoryAuthStore{}, nil, nil)
+	record := &coreauth.Auth{
+		ID:       "auto429-disabled.json",
+		FileName: "auto429-disabled.json",
+		Provider: "claude",
+		Attributes: map[string]string{
+			"path": "/tmp/auto429-disabled.json",
+		},
+		Metadata: map[string]any{
+			"type":                       "claude",
+			"auto_disable_429_threshold": 1,
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
+		t.Fatalf("failed to register auth record: %v", errRegister)
+	}
+	manager.MarkResult(context.Background(), coreauth.Result{
+		AuthID: "auto429-disabled.json",
+		Model:  "claude-test",
+		Error:  &coreauth.Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+	disabled, ok := manager.GetByID("auto429-disabled.json")
+	if !ok || !disabled.Disabled {
+		t.Fatalf("expected auth to be auto-disabled before patch, got %#v ok=%v", disabled, ok)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	body := `{"name":"auto429-disabled.json","auto_disable_429_threshold":0}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+	h.PatchAuthFileFields(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	updated, ok := manager.GetByID("auto429-disabled.json")
+	if !ok || updated == nil {
+		t.Fatalf("expected auth record to exist after patch")
+	}
+	if updated.Disabled || updated.Status != coreauth.StatusActive {
+		t.Fatalf("expected threshold=0 to restore auth, got disabled=%v status=%s", updated.Disabled, updated.Status)
+	}
+	if updated.LastError != nil || updated.Quota.Exceeded {
+		t.Fatalf("expected threshold=0 to clear aggregate runtime errors, got last_error=%#v quota=%#v", updated.LastError, updated.Quota)
+	}
+	if state := updated.ModelStates["claude-test"]; state != nil {
+		if state.Unavailable || state.Status != coreauth.StatusActive || state.LastError != nil || state.Quota.Exceeded {
+			t.Fatalf("expected threshold=0 to keep cleared model state, got %#v", state)
+		}
+	}
+	if got := updated.AutoDisable429Threshold(); got != 0 {
+		t.Fatalf("auto_disable_429_threshold = %d, want 0", got)
+	}
+	if _, okSnapshot := manager.Auto429Snapshot("auto429-disabled.json"); okSnapshot {
+		t.Fatalf("expected auto-429 runtime state to be cleared")
+	}
+}
+
+func TestPatchAuthFileStatus_EnableClearsAuto429RuntimeState(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	manager := coreauth.NewManager(&memoryAuthStore{}, nil, nil)
+	record := &coreauth.Auth{
+		ID:       "auto429-status.json",
+		FileName: "auto429-status.json",
+		Provider: "claude",
+		Attributes: map[string]string{
+			"path": "/tmp/auto429-status.json",
+		},
+		Metadata: map[string]any{
+			"type":                       "claude",
+			"auto_disable_429_threshold": 1,
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
+		t.Fatalf("failed to register auth record: %v", errRegister)
+	}
+	manager.MarkResult(context.Background(), coreauth.Result{
+		AuthID: "auto429-status.json",
+		Model:  "claude-test",
+		Error:  &coreauth.Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	body := `{"name":"auto429-status.json","disabled":false}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/status", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+	h.PatchAuthFileStatus(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	updated, ok := manager.GetByID("auto429-status.json")
+	if !ok || updated == nil {
+		t.Fatalf("expected auth record to exist after patch")
+	}
+	if updated.Disabled || updated.Status != coreauth.StatusActive {
+		t.Fatalf("expected status patch to restore auth, got disabled=%v status=%s", updated.Disabled, updated.Status)
+	}
+	if state := updated.ModelStates["claude-test"]; state != nil {
+		if state.Unavailable || state.Status != coreauth.StatusActive || state.LastError != nil || state.Quota.Exceeded {
+			t.Fatalf("expected status patch to keep cleared model state, got %#v", state)
+		}
+	}
+	if _, okSnapshot := manager.Auto429Snapshot("auto429-status.json"); okSnapshot {
+		t.Fatalf("expected auto-429 runtime state to be cleared")
+	}
+}

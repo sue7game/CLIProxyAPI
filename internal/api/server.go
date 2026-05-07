@@ -640,10 +640,12 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/oauth-model-alias", s.mgmt.DeleteOAuthModelAlias)
 
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
+		mgmt.GET("/auth-files/auto-429-events", s.mgmt.GetAuthFileAuto429Events)
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
 		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)
+		mgmt.POST("/auth-files/auto-429-probe", s.mgmt.PostAuthFileAuto429Probe)
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)
 		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
 		mgmt.PATCH("/auth-files/fields", s.mgmt.PatchAuthFileFields)

@@ -391,6 +391,43 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	entry["success"] = auth.Success
 	entry["failed"] = auth.Failed
 	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())
+	if disableCooling, ok := auth.DisableCoolingOverride(); ok {
+		entry["disable_cooling"] = disableCooling
+	}
+	entry["auto_disable_429_threshold"] = auth.AutoDisable429Threshold()
+	entry["auto_429_recheck_interval"] = auth.Auto429RecheckIntervalSeconds()
+	if h != nil && h.authManager != nil {
+		eventCount := h.authManager.Auto429EventCount(auth.ID)
+		if eventCount > 0 {
+			entry["has_auto_429_events"] = true
+			entry["auto_429_event_count"] = eventCount
+		}
+		if snapshot, ok := h.authManager.Auto429Snapshot(auth.ID); ok {
+			entry["auto_429_count"] = snapshot.Count
+			entry["auto_disabled_by_429"] = snapshot.AutoDisabled
+			if !snapshot.DisabledAt.IsZero() {
+				entry["auto_disabled_429_at"] = snapshot.DisabledAt
+			}
+			if !snapshot.Last429At.IsZero() {
+				entry["last_auto_429_at"] = snapshot.Last429At
+			}
+			if snapshot.Last429Model != "" {
+				entry["auto_disabled_429_model"] = snapshot.Last429Model
+			}
+			if !snapshot.NextRecheckAt.IsZero() {
+				entry["next_auto_429_recheck_at"] = snapshot.NextRecheckAt
+			}
+			if snapshot.LastProbeModel != "" {
+				entry["auto_429_probe_model"] = snapshot.LastProbeModel
+			}
+			if snapshot.LastProbeStatusCode != 0 {
+				entry["auto_429_probe_status"] = snapshot.LastProbeStatusCode
+			}
+			if snapshot.LastProbeError != "" {
+				entry["auto_429_probe_error"] = snapshot.LastProbeError
+			}
+		}
+	}
 	if email := authEmail(auth); email != "" {
 		entry["email"] = email
 	}
@@ -1105,9 +1142,15 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	// Update disabled state
 	targetAuth.Disabled = *req.Disabled
 	if *req.Disabled {
+		h.authManager.ForgetAuto429State(targetAuth.ID)
 		targetAuth.Status = coreauth.StatusDisabled
 		targetAuth.StatusMessage = "disabled via management API"
 	} else {
+		if h.authManager.ClearAuto429State(targetAuth.ID) {
+			if refreshedAuth, ok := h.authManager.GetByID(targetAuth.ID); ok {
+				targetAuth = refreshedAuth
+			}
+		}
 		targetAuth.Status = coreauth.StatusActive
 		targetAuth.StatusMessage = ""
 	}
@@ -1121,7 +1164,7 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
 }
 
-// PatchAuthFileFields updates editable fields (prefix, proxy_url, headers, priority, note) of an auth file.
+// PatchAuthFileFields updates editable metadata fields of an auth file.
 func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	if h.authManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
@@ -1129,12 +1172,15 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 
 	var req struct {
-		Name     string            `json:"name"`
-		Prefix   *string           `json:"prefix"`
-		ProxyURL *string           `json:"proxy_url"`
-		Headers  map[string]string `json:"headers"`
-		Priority *int              `json:"priority"`
-		Note     *string           `json:"note"`
+		Name                    string            `json:"name"`
+		Prefix                  *string           `json:"prefix"`
+		ProxyURL                *string           `json:"proxy_url"`
+		Headers                 map[string]string `json:"headers"`
+		Priority                *int              `json:"priority"`
+		Note                    *string           `json:"note"`
+		DisableCooling          *bool             `json:"disable_cooling"`
+		AutoDisable429Threshold *int              `json:"auto_disable_429_threshold"`
+		Auto429RecheckInterval  *int              `json:"auto_429_recheck_interval"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -1166,6 +1212,29 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	if targetAuth == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
 		return
+	}
+
+	autoDisable429Threshold := 0
+	hasAutoDisable429Threshold := req.AutoDisable429Threshold != nil
+	if hasAutoDisable429Threshold {
+		autoDisable429Threshold = *req.AutoDisable429Threshold
+		if autoDisable429Threshold < 0 {
+			autoDisable429Threshold = 0
+		}
+		if autoDisable429Threshold <= 0 && h.authManager.ClearAuto429State(targetAuth.ID) {
+			if refreshedAuth, ok := h.authManager.GetByID(targetAuth.ID); ok {
+				targetAuth = refreshedAuth
+			}
+		}
+	}
+
+	auto429RecheckInterval := 0
+	hasAuto429RecheckInterval := req.Auto429RecheckInterval != nil
+	if hasAuto429RecheckInterval {
+		auto429RecheckInterval = *req.Auto429RecheckInterval
+		if auto429RecheckInterval <= 0 {
+			auto429RecheckInterval = 600
+		}
 	}
 
 	changed := false
@@ -1300,6 +1369,31 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		}
 		changed = true
 	}
+	if req.DisableCooling != nil {
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		if targetAuth.Attributes == nil {
+			targetAuth.Attributes = make(map[string]string)
+		}
+		targetAuth.Metadata["disable_cooling"] = *req.DisableCooling
+		delete(targetAuth.Metadata, "disable-cooling")
+		targetAuth.Attributes["disable_cooling"] = strconv.FormatBool(*req.DisableCooling)
+		delete(targetAuth.Attributes, "disable-cooling")
+		changed = true
+	}
+	if hasAutoDisable429Threshold || hasAuto429RecheckInterval {
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		if hasAutoDisable429Threshold {
+			targetAuth.Metadata["auto_disable_429_threshold"] = autoDisable429Threshold
+		}
+		if hasAuto429RecheckInterval {
+			targetAuth.Metadata["auto_429_recheck_interval"] = auto429RecheckInterval
+		}
+		changed = true
+	}
 
 	if !changed {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
@@ -1314,6 +1408,105 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (h *Handler) findAuthFileByNameOrID(name string) *coreauth.Auth {
+	if h == nil || h.authManager == nil {
+		return nil
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	if auth, ok := h.authManager.GetByID(name); ok {
+		return auth
+	}
+	for _, auth := range h.authManager.List() {
+		if auth.FileName == name {
+			return auth
+		}
+	}
+	return nil
+}
+
+// GetAuthFileAuto429Events returns compact runtime-only auto-429 history for one auth file.
+func (h *Handler) GetAuthFileAuto429Events(c *gin.Context) {
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		return
+	}
+
+	name := strings.TrimSpace(c.Query("name"))
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+
+	targetAuth := h.findAuthFileByNameOrID(name)
+	if targetAuth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+		return
+	}
+
+	events := h.authManager.Auto429Events(targetAuth.ID)
+	if events == nil {
+		events = []coreauth.Auto429Event{}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status": "ok",
+		"events": events,
+	})
+}
+
+// PostAuthFileAuto429Probe runs an immediate auto-429 recovery probe for one auth file.
+func (h *Handler) PostAuthFileAuto429Probe(c *gin.Context) {
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+
+	targetAuth := h.findAuthFileByNameOrID(name)
+	if targetAuth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+		return
+	}
+
+	outcome, err := h.authManager.ProbeAuto429State(c.Request.Context(), targetAuth.ID)
+	if err != nil {
+		status := http.StatusConflict
+		if errors.Is(err, coreauth.ErrAuto429AuthNotFound) {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":                   "ok",
+		"auth_id":                  outcome.AuthID,
+		"model":                    outcome.Model,
+		"upstream_model":           outcome.UpstreamModel,
+		"restored":                 outcome.Restored,
+		"auto_disabled_by_429":     outcome.AutoDisabled,
+		"auto_429_cleared":         outcome.Auto429Cleared,
+		"auto_429_probe_status":    outcome.StatusCode,
+		"auto_429_probe_error":     outcome.Error,
+		"next_auto_429_recheck_at": outcome.NextRecheckAt,
+	})
 }
 
 func (h *Handler) disableAuth(ctx context.Context, id string) {

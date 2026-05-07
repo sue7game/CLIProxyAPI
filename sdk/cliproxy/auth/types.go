@@ -416,6 +416,33 @@ func (a *Auth) RequestRetryOverride() (int, bool) {
 	return 0, false
 }
 
+// AutoDisable429Threshold returns the consecutive HTTP 429 threshold for runtime auto-disable.
+func (a *Auth) AutoDisable429Threshold() int {
+	if a == nil || a.Metadata == nil {
+		return 0
+	}
+	if val, ok := a.Metadata["auto_disable_429_threshold"]; ok {
+		if parsed, okParse := parseIntAny(val); okParse && parsed > 0 {
+			return parsed
+		}
+	}
+	return 0
+}
+
+// Auto429RecheckIntervalSeconds returns the runtime auto-disable recheck interval in seconds.
+func (a *Auth) Auto429RecheckIntervalSeconds() int {
+	const defaultSeconds = 600
+	if a == nil || a.Metadata == nil {
+		return defaultSeconds
+	}
+	if val, ok := a.Metadata["auto_429_recheck_interval"]; ok {
+		if parsed, okParse := parseIntAny(val); okParse && parsed > 0 {
+			return parsed
+		}
+	}
+	return defaultSeconds
+}
+
 func parseBoolAny(val any) (bool, bool) {
 	switch typed := val.(type) {
 	case bool:

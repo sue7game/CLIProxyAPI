@@ -177,6 +177,11 @@ type Manager struct {
 	// Auto refresh state
 	refreshCancel context.CancelFunc
 	refreshLoop   *authAutoRefreshLoop
+
+	// Auto 429 disable state is runtime-only and intentionally not persisted.
+	auto429              map[string]*auto429State
+	auto429Events        map[string][]Auto429Event
+	auto429RecheckCancel context.CancelFunc
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
@@ -195,6 +200,8 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		auths:            make(map[string]*Auth),
 		providerOffsets:  make(map[string]int),
 		modelPoolOffsets: make(map[string]int),
+		auto429:          make(map[string]*auto429State),
+		auto429Events:    make(map[string][]Auto429Event),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
@@ -321,7 +328,8 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 				auth.Status = StatusActive
 			}
 			auth.UpdatedAt = now
-			if errPersist := m.persist(ctx, auth); errPersist != nil {
+			persistAuth := m.authForAuto429SafePersistLocked(auth)
+			if errPersist := m.persist(ctx, persistAuth); errPersist != nil {
 				logEntryWithRequestID(ctx).WithField("auth_id", auth.ID).Warnf("failed to persist auth changes during model state reconciliation: %v", errPersist)
 			}
 			snapshot = auth.Clone()
@@ -1104,7 +1112,11 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	auth.EnsureIndex()
 	authClone := auth.Clone()
+	now := time.Now()
 	m.mu.Lock()
+	m.forgetAuto429ForManualDisableLocked(auth)
+	m.reapplyAuto429StateLocked(authClone, now)
+	persistAuth := m.authForAuto429SafePersistLocked(auth)
 	m.auths[auth.ID] = authClone
 	m.mu.Unlock()
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
@@ -1112,7 +1124,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		m.scheduler.upsertAuth(authClone)
 	}
 	m.queueRefreshReschedule(auth.ID)
-	_ = m.persist(ctx, auth)
+	_ = m.persist(ctx, persistAuth)
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
 	return auth.Clone(), nil
 }
@@ -1139,14 +1151,18 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	auth.EnsureIndex()
 	authClone := auth.Clone()
+	now := time.Now()
+	m.forgetAuto429ForManualDisableLocked(auth)
 	m.auths[auth.ID] = authClone
+	m.reapplyAuto429StateLocked(authClone, now)
+	persistAuth := m.authForAuto429SafePersistLocked(auth)
 	m.mu.Unlock()
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	if m.scheduler != nil {
 		m.scheduler.upsertAuth(authClone)
 	}
 	m.queueRefreshReschedule(auth.ID)
-	_ = m.persist(ctx, auth)
+	_ = m.persist(ctx, persistAuth)
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
 	return auth.Clone(), nil
 }
@@ -2177,8 +2193,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				applyAuthFailureState(auth, result.Error, result.RetryAfter, now)
 			}
 		}
-
-		_ = m.persist(ctx, auth)
+		persistAuth := m.authForAuto429SafePersistLocked(auth)
+		_ = m.persist(ctx, persistAuth)
+		m.recordAuto429ResultLocked(ctx, auth, result, now)
 		authSnapshot = auth.Clone()
 	}
 	m.mu.Unlock()

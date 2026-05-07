@@ -256,6 +256,12 @@ func SynthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]an
 		} else if v, ok := metadata["request-retry"]; ok {
 			metadataCopy["request_retry"] = v
 		}
+		if v, ok := metadata["auto_disable_429_threshold"]; ok {
+			metadataCopy["auto_disable_429_threshold"] = v
+		}
+		if v, ok := metadata["auto_429_recheck_interval"]; ok {
+			metadataCopy["auto_429_recheck_interval"] = v
+		}
 		proxy := strings.TrimSpace(primary.ProxyURL)
 		if proxy != "" {
 			metadataCopy["proxy_url"] = proxy
