@@ -257,9 +257,22 @@ func (m *Manager) forgetAuto429ForManualDisableLocked(auth *Auth) {
 	if m == nil || auth == nil || auth.ID == "" {
 		return
 	}
-	if auth.Disabled && auth.StatusMessage != auto429DisabledStatusMessage {
+	if isExplicitManualDisableUpdate(auth) {
 		delete(m.auto429, auth.ID)
 	}
+}
+
+func isExplicitManualDisableUpdate(auth *Auth) bool {
+	if auth == nil || !auth.Disabled || auth.StatusMessage == auto429DisabledStatusMessage {
+		return false
+	}
+	if auth.Metadata != nil {
+		if disabled, ok := parseBoolAny(auth.Metadata["disabled"]); ok && disabled {
+			return true
+		}
+	}
+	msg := strings.ToLower(strings.TrimSpace(auth.StatusMessage))
+	return strings.HasPrefix(msg, "disabled") || strings.HasPrefix(msg, "removed")
 }
 
 func (m *Manager) authForAuto429SafePersistLocked(auth *Auth) *Auth {

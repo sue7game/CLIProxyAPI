@@ -2193,9 +2193,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				applyAuthFailureState(auth, result.Error, result.RetryAfter, now)
 			}
 		}
+		m.recordAuto429ResultLocked(ctx, auth, result, now)
+		m.reapplyAuto429StateLocked(auth, now)
 		persistAuth := m.authForAuto429SafePersistLocked(auth)
 		_ = m.persist(ctx, persistAuth)
-		m.recordAuto429ResultLocked(ctx, auth, result, now)
 		authSnapshot = auth.Clone()
 	}
 	m.mu.Unlock()

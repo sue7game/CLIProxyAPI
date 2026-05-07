@@ -265,6 +265,64 @@ func TestAuto429DisableIsNotPersistedByLaterResult(t *testing.T) {
 	}
 }
 
+func TestAuto429RuntimeStateSurvivesLater429AndFieldUpdate(t *testing.T) {
+	store := &captureStore{}
+	mgr := NewManager(store, nil, nil)
+	auth := &Auth{
+		ID:       "auth-stale-update",
+		Provider: "test-provider",
+		Metadata: map[string]any{
+			"type":                       "test-provider",
+			"auto_disable_429_threshold": 1,
+		},
+	}
+	if _, errRegister := mgr.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-stale-update",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-stale-update",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusTooManyRequests, Message: "You have exhausted your capacity on this model."},
+	})
+
+	got, ok := mgr.GetByID("auth-stale-update")
+	if !ok || !got.Disabled || got.Status != StatusDisabled || got.StatusMessage != auto429DisabledStatusMessage {
+		t.Fatalf("expected later 429 to keep runtime auto-disable state, got %#v ok=%v", got, ok)
+	}
+	if snapshot, okSnapshot := mgr.Auto429Snapshot("auth-stale-update"); !okSnapshot || !snapshot.AutoDisabled {
+		t.Fatalf("expected auto-429 runtime state to remain, got %#v ok=%v", snapshot, okSnapshot)
+	}
+	saved := store.LastSave()
+	if saved == nil {
+		t.Fatalf("expected auth save")
+	}
+	if saved.Disabled || saved.StatusMessage == auto429DisabledStatusMessage {
+		t.Fatalf("expected persisted auth to exclude runtime disable, got disabled=%v message=%q", saved.Disabled, saved.StatusMessage)
+	}
+
+	staleUpdate := got.Clone()
+	staleUpdate.Status = StatusError
+	staleUpdate.StatusMessage = "You have exhausted your capacity on this model."
+	staleUpdate.Metadata["priority"] = 3
+	if _, errUpdate := mgr.Update(context.Background(), staleUpdate); errUpdate != nil {
+		t.Fatalf("field update: %v", errUpdate)
+	}
+
+	got, ok = mgr.GetByID("auth-stale-update")
+	if !ok || !got.Disabled || got.Status != StatusDisabled || got.StatusMessage != auto429DisabledStatusMessage {
+		t.Fatalf("expected field update to preserve auto-429 runtime disable, got %#v ok=%v", got, ok)
+	}
+	if snapshot, okSnapshot := mgr.Auto429Snapshot("auth-stale-update"); !okSnapshot || !snapshot.AutoDisabled {
+		t.Fatalf("expected field update to keep auto-429 runtime state, got %#v ok=%v", snapshot, okSnapshot)
+	}
+}
+
 func TestAuto429DisableIsNotPersistedByRegistryReconcile(t *testing.T) {
 	store := &captureStore{}
 	mgr := NewManager(store, nil, nil)
