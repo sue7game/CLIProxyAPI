@@ -146,8 +146,15 @@ func (m *Manager) auto429DueProbeJobs(now time.Time) []auto429ProbeJob {
 			continue
 		}
 		auth := m.auths[authID]
-		if auth == nil || auth.AutoDisable429Threshold() <= 0 {
-			delete(m.auto429, authID)
+		if auth == nil {
+			m.clearAuto429StateWithEventLocked(authID, now, "auth missing, auto-429 cleared")
+			m.deleteAuto429EventsLocked(authID)
+			continue
+		}
+		if auth.AutoDisable429Threshold() <= 0 {
+			if m.clearAuto429StateWithEventLocked(authID, now, "threshold disabled, auto-429 cleared") {
+				clearAuto429RuntimeDisable(auth, now)
+			}
 			continue
 		}
 		if state.probing {
@@ -221,15 +228,19 @@ func (m *Manager) auto429ProbeJob(authID string, now time.Time, eventType string
 	}
 	currentAuth := m.auths[authID]
 	if currentAuth == nil {
-		delete(m.auto429, authID)
+		m.clearAuto429StateWithEventLocked(authID, now, "auth missing, auto-429 cleared")
+		m.deleteAuto429EventsLocked(authID)
 		m.mu.Unlock()
 		return auto429ProbeJob{}, ErrAuto429AuthNotFound
 	}
 	if currentAuth.AutoDisable429Threshold() <= 0 {
-		delete(m.auto429, authID)
+		if m.clearAuto429StateWithEventLocked(authID, now, "threshold disabled, auto-429 cleared") {
+			clearAuto429RuntimeDisable(currentAuth, now)
+		}
 		m.mu.Unlock()
 		return auto429ProbeJob{}, ErrAuto429NotDisabled
 	}
+	m.reapplyAuto429StateLocked(currentAuth, now)
 	provider := strings.TrimSpace(currentAuth.Provider)
 	exec = m.executors[provider]
 	if exec == nil {
@@ -284,16 +295,20 @@ func (m *Manager) beginAuto429Probe(authID string, startedAt time.Time) error {
 	}
 	auth := m.auths[authID]
 	if auth == nil {
-		delete(m.auto429, authID)
+		m.clearAuto429StateWithEventLocked(authID, startedAt, "auth missing, auto-429 cleared")
+		m.deleteAuto429EventsLocked(authID)
 		return ErrAuto429AuthNotFound
 	}
 	if auth.AutoDisable429Threshold() <= 0 {
-		delete(m.auto429, authID)
+		if m.clearAuto429StateWithEventLocked(authID, startedAt, "threshold disabled, auto-429 cleared") {
+			clearAuto429RuntimeDisable(auth, startedAt)
+		}
 		return ErrAuto429NotDisabled
 	}
 	if state.probing {
 		return ErrAuto429ProbeInProgress
 	}
+	m.reapplyAuto429StateLocked(auth, startedAt)
 	state.probing = true
 	state.probeStartedAt = startedAt
 	return nil
@@ -322,6 +337,7 @@ func (m *Manager) recordAuto429ProbeSetupError(authID, message, probeModel strin
 	if baseTime.IsZero() {
 		baseTime = time.Now()
 	}
+	var snapshot *Auth
 	m.mu.Lock()
 	state := m.auto429[authID]
 	auth := m.auths[authID]
@@ -333,13 +349,18 @@ func (m *Manager) recordAuto429ProbeSetupError(authID, message, probeModel strin
 	state.lastProbeError = message
 	state.lastProbeModel = strings.TrimSpace(probeModel)
 	state.nextRecheckAt = baseTime.Add(time.Duration(auth.Auto429RecheckIntervalSeconds()) * time.Second)
+	m.reapplyAuto429StateLocked(auth, baseTime)
 	m.appendAuto429EventLocked(authID, Auto429Event{
 		Time:   baseTime,
 		Type:   normalizeAuto429ProbeEventType(eventType),
 		Model:  probeModel,
 		Result: message,
 	})
+	snapshot = auth.Clone()
 	m.mu.Unlock()
+	if snapshot != nil && m.scheduler != nil {
+		m.scheduler.upsertAuth(snapshot)
+	}
 }
 
 func (m *Manager) runAuto429Probe(ctx context.Context, job auto429ProbeJob, startedAt time.Time, eventType string) Auto429ProbeOutcome {
@@ -442,8 +463,8 @@ func (m *Manager) recordAuto429ProbeResult(authID string, err error, baseTime ti
 			outcome.AutoDisabled = false
 			return outcome
 		}
-		if auth.Disabled && auth.StatusMessage != auto429DisabledStatusMessage {
-			delete(m.auto429, authID)
+		if isExplicitManualDisableUpdate(auth) {
+			m.clearAuto429StateWithEventLocked(authID, now, "manual disabled, auto-429 cleared")
 			m.mu.Unlock()
 			outcome.AutoDisabled = false
 			outcome.Auto429Cleared = true
@@ -456,7 +477,7 @@ func (m *Manager) recordAuto429ProbeResult(authID string, err error, baseTime ti
 		clearModelsForAuthID = authID
 		m.appendAuto429EventLocked(authID, Auto429Event{
 			Time:   now,
-			Type:   "restored",
+			Type:   auto429EventRestored,
 			Model:  routeModel,
 			Result: "success, restored",
 		})
@@ -480,6 +501,7 @@ func (m *Manager) recordAuto429ProbeResult(authID string, err error, baseTime ti
 	state.lastProbeError = err.Error()
 	state.lastProbeModel = strings.TrimSpace(upstreamModel)
 	state.nextRecheckAt = baseTime.Add(time.Duration(auth.Auto429RecheckIntervalSeconds()) * time.Second)
+	m.reapplyAuto429StateLocked(auth, now)
 	outcome.StatusCode = status
 	outcome.Error = state.lastProbeError
 	outcome.NextRecheckAt = state.nextRecheckAt
@@ -489,7 +511,11 @@ func (m *Manager) recordAuto429ProbeResult(authID string, err error, baseTime ti
 		Model:  routeModel,
 		Result: auto429ProbeFailureResult(status),
 	})
+	snapshot = auth.Clone()
 	m.mu.Unlock()
+	if snapshot != nil && m.scheduler != nil {
+		m.scheduler.upsertAuth(snapshot)
+	}
 
 	if status != http.StatusTooManyRequests {
 		log.WithField("auth_id", authID).Debugf("auto-429 probe failed with status %d: %v", status, err)

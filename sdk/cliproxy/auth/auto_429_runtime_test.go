@@ -15,10 +15,22 @@ import (
 
 type captureStore struct {
 	mu    sync.Mutex
+	items []*Auth
 	saves []*Auth
 }
 
-func (s *captureStore) List(context.Context) ([]*Auth, error) { return nil, nil }
+func (s *captureStore) List(context.Context) ([]*Auth, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.items) == 0 {
+		return nil, nil
+	}
+	out := make([]*Auth, 0, len(s.items))
+	for _, auth := range s.items {
+		out = append(out, auth.Clone())
+	}
+	return out, nil
+}
 
 func (s *captureStore) Save(_ context.Context, auth *Auth) (string, error) {
 	s.mu.Lock()
@@ -323,6 +335,211 @@ func TestAuto429RuntimeStateSurvivesLater429AndFieldUpdate(t *testing.T) {
 	}
 }
 
+func TestAuto429FailedProbeReappliesRuntimeStatus(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-probe-status",
+		Provider: "test-provider",
+		Metadata: map[string]any{
+			"auto_disable_429_threshold": 1,
+			"auto_429_recheck_interval":  60,
+		},
+	}
+	if _, errRegister := mgr.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-probe-status",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+
+	raw429 := `{ "error": { "code": 429, "message": "Resource has been exhausted" } }`
+	mgr.mu.Lock()
+	mgr.auths["auth-probe-status"].Status = StatusError
+	mgr.auths["auth-probe-status"].StatusMessage = raw429
+	mgr.auths["auth-probe-status"].LastError = &Error{HTTPStatus: http.StatusTooManyRequests, Message: raw429}
+	mgr.mu.Unlock()
+
+	executor := &auto429ProbeExecutor{err: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "still quota"}}
+	mgr.RegisterExecutor(executor)
+	outcome, errProbe := mgr.ProbeAuto429State(context.Background(), "auth-probe-status")
+	if errProbe != nil {
+		t.Fatalf("manual probe: %v", errProbe)
+	}
+	if outcome.Restored || outcome.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected failed 429 probe outcome, got %#v", outcome)
+	}
+
+	got, ok := mgr.GetByID("auth-probe-status")
+	if !ok || !got.Disabled || got.Status != StatusDisabled || got.StatusMessage != auto429DisabledStatusMessage {
+		t.Fatalf("expected failed probe to reapply auto-429 status, got %#v ok=%v", got, ok)
+	}
+}
+
+func TestAuto429SuccessfulProbeRestoresWhenStatusMessageWasOverwritten(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-probe-restore",
+		Provider: "test-provider",
+		Metadata: map[string]any{
+			"auto_disable_429_threshold": 1,
+			"auto_429_recheck_interval":  60,
+		},
+	}
+	if _, errRegister := mgr.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-probe-restore",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+
+	raw429 := `{ "error": { "code": 429, "message": "Resource has been exhausted" } }`
+	mgr.mu.Lock()
+	mgr.auths["auth-probe-restore"].Disabled = true
+	mgr.auths["auth-probe-restore"].Status = StatusError
+	mgr.auths["auth-probe-restore"].StatusMessage = raw429
+	mgr.mu.Unlock()
+
+	executor := &auto429ProbeExecutor{}
+	mgr.RegisterExecutor(executor)
+	outcome, errProbe := mgr.ProbeAuto429State(context.Background(), "auth-probe-restore")
+	if errProbe != nil {
+		t.Fatalf("manual probe: %v", errProbe)
+	}
+	if !outcome.Restored || outcome.AutoDisabled {
+		t.Fatalf("expected overwritten auto-429 status to restore on success, got %#v", outcome)
+	}
+	got, ok := mgr.GetByID("auth-probe-restore")
+	if !ok || got.Disabled || got.Status != StatusActive || got.StatusMessage != "" {
+		t.Fatalf("expected auth restored, got %#v ok=%v", got, ok)
+	}
+	if _, okSnapshot := mgr.Auto429Snapshot("auth-probe-restore"); okSnapshot {
+		t.Fatalf("expected auto-429 state to be removed after restore")
+	}
+	events := mgr.Auto429Events("auth-probe-restore")
+	if len(events) != 2 || events[1].Type != auto429EventRestored {
+		t.Fatalf("expected restored event after success, got %#v", events)
+	}
+}
+
+func TestAuto429ThresholdDisableClearsOverwrittenRuntimeStatus(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-threshold-clear",
+		Provider: "test-provider",
+		Metadata: map[string]any{"auto_disable_429_threshold": 1},
+	}
+	if _, errRegister := mgr.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-threshold-clear",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+
+	update, ok := mgr.GetByID("auth-threshold-clear")
+	if !ok {
+		t.Fatalf("auth missing")
+	}
+	update.Status = StatusError
+	update.StatusMessage = "Resource has been exhausted"
+	update.Metadata["auto_disable_429_threshold"] = 0
+	if _, errUpdate := mgr.Update(context.Background(), update); errUpdate != nil {
+		t.Fatalf("threshold update: %v", errUpdate)
+	}
+
+	got, ok := mgr.GetByID("auth-threshold-clear")
+	if !ok || got.Disabled || got.Status != StatusActive || got.StatusMessage != "" {
+		t.Fatalf("expected threshold=0 to clear auto-429 runtime disable, got %#v ok=%v", got, ok)
+	}
+	if _, okSnapshot := mgr.Auto429Snapshot("auth-threshold-clear"); okSnapshot {
+		t.Fatalf("expected auto-429 snapshot to be removed")
+	}
+	events := mgr.Auto429Events("auth-threshold-clear")
+	if len(events) != 2 || events[1].Type != auto429EventCleared {
+		t.Fatalf("expected cleared event after threshold disable, got %#v", events)
+	}
+}
+
+func TestClearAuto429StatePreservesManualDisabledCustomReason(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-manual-clear",
+		Provider: "test-provider",
+		Metadata: map[string]any{"auto_disable_429_threshold": 1},
+	}
+	if _, errRegister := mgr.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-manual-clear",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+
+	mgr.mu.Lock()
+	mgr.auths["auth-manual-clear"].Disabled = true
+	mgr.auths["auth-manual-clear"].Status = StatusDisabled
+	mgr.auths["auth-manual-clear"].StatusMessage = "maintenance"
+	mgr.auths["auth-manual-clear"].LastError = nil
+	mgr.mu.Unlock()
+
+	if mgr.ClearAuto429State("auth-manual-clear") {
+		t.Fatalf("expected ClearAuto429State not to restore a manually disabled auth")
+	}
+	got, ok := mgr.GetByID("auth-manual-clear")
+	if !ok || !got.Disabled || got.Status != StatusDisabled || got.StatusMessage != "maintenance" {
+		t.Fatalf("expected manual disabled state to be preserved, got %#v ok=%v", got, ok)
+	}
+	if _, okSnapshot := mgr.Auto429Snapshot("auth-manual-clear"); okSnapshot {
+		t.Fatalf("expected auto-429 snapshot to be removed")
+	}
+	events := mgr.Auto429Events("auth-manual-clear")
+	if len(events) != 2 || events[1].Type != auto429EventCleared {
+		t.Fatalf("expected cleared event while preserving manual disable, got %#v", events)
+	}
+}
+
+func TestClearAuto429StateRestoresOverwritten429Status(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-overwritten-clear",
+		Provider: "test-provider",
+		Metadata: map[string]any{"auto_disable_429_threshold": 1},
+	}
+	if _, errRegister := mgr.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-overwritten-clear",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+
+	raw429 := `{ "error": { "code": 429, "message": "Resource has been exhausted" } }`
+	mgr.mu.Lock()
+	mgr.auths["auth-overwritten-clear"].Disabled = true
+	mgr.auths["auth-overwritten-clear"].Status = StatusDisabled
+	mgr.auths["auth-overwritten-clear"].StatusMessage = raw429
+	mgr.auths["auth-overwritten-clear"].LastError = &Error{HTTPStatus: http.StatusTooManyRequests, Message: raw429}
+	mgr.mu.Unlock()
+
+	if !mgr.ClearAuto429State("auth-overwritten-clear") {
+		t.Fatalf("expected ClearAuto429State to restore overwritten auto-429 status")
+	}
+	got, ok := mgr.GetByID("auth-overwritten-clear")
+	if !ok || got.Disabled || got.Status != StatusActive || got.StatusMessage != "" {
+		t.Fatalf("expected overwritten auto-429 status to be restored, got %#v ok=%v", got, ok)
+	}
+	if _, okSnapshot := mgr.Auto429Snapshot("auth-overwritten-clear"); okSnapshot {
+		t.Fatalf("expected auto-429 snapshot to be removed")
+	}
+}
+
 func TestAuto429DisableIsNotPersistedByRegistryReconcile(t *testing.T) {
 	store := &captureStore{}
 	mgr := NewManager(store, nil, nil)
@@ -355,6 +572,73 @@ func TestAuto429DisableIsNotPersistedByRegistryReconcile(t *testing.T) {
 	}
 	if saved.Disabled || saved.StatusMessage == auto429DisabledStatusMessage {
 		t.Fatalf("expected reconcile persist to exclude runtime disable, got disabled=%v message=%q", saved.Disabled, saved.StatusMessage)
+	}
+}
+
+func TestAuto429RegistryReconcileReappliesRuntimeStatus(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-reconcile-status",
+		Provider: "test-provider",
+		Metadata: map[string]any{
+			"type":                       "test-provider",
+			"auto_disable_429_threshold": 1,
+		},
+	}
+	if _, errRegister := mgr.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-reconcile-status",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+	mgr.mu.Lock()
+	mgr.auths["auth-reconcile-status"].Status = StatusError
+	mgr.auths["auth-reconcile-status"].StatusMessage = "Resource has been exhausted"
+	mgr.mu.Unlock()
+
+	mgr.ReconcileRegistryModelStates(context.Background(), "auth-reconcile-status")
+
+	got, ok := mgr.GetByID("auth-reconcile-status")
+	if !ok || !got.Disabled || got.Status != StatusDisabled || got.StatusMessage != auto429DisabledStatusMessage {
+		t.Fatalf("expected reconcile to reapply auto-429 runtime status, got %#v ok=%v", got, ok)
+	}
+}
+
+func TestAuto429LoadReappliesRuntimeStatus(t *testing.T) {
+	store := &captureStore{}
+	mgr := NewManager(store, nil, nil)
+	auth := &Auth{
+		ID:       "auth-load-status",
+		Provider: "test-provider",
+		Metadata: map[string]any{
+			"type":                       "test-provider",
+			"auto_disable_429_threshold": 1,
+		},
+	}
+	if _, errRegister := mgr.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-load-status",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+
+	reloaded := auth.Clone()
+	reloaded.Status = StatusError
+	reloaded.StatusMessage = "Resource has been exhausted"
+	store.mu.Lock()
+	store.items = []*Auth{reloaded}
+	store.mu.Unlock()
+
+	if errLoad := mgr.Load(context.Background()); errLoad != nil {
+		t.Fatalf("load: %v", errLoad)
+	}
+	got, ok := mgr.GetByID("auth-load-status")
+	if !ok || !got.Disabled || got.Status != StatusDisabled || got.StatusMessage != auto429DisabledStatusMessage {
+		t.Fatalf("expected load to reapply auto-429 runtime status, got %#v ok=%v", got, ok)
 	}
 }
 
@@ -658,6 +942,82 @@ func TestAuto429EventsCompactMiddleRepeated429Probes(t *testing.T) {
 	}
 	if events[0].Type != "disabled" || events[1].Type != "manual_probe" || events[2].Type != "manual_probe" {
 		t.Fatalf("unexpected compacted events: %#v", events)
+	}
+}
+
+func TestAuto429EventsRemovedOnDeletedAuthUpdate(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-events-delete",
+		Provider: "test-provider",
+		Metadata: map[string]any{"auto_disable_429_threshold": 1},
+	}
+	if _, errRegister := mgr.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-events-delete",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+	if count := mgr.Auto429EventCount("auth-events-delete"); count == 0 {
+		t.Fatalf("expected auto-429 events before delete")
+	}
+
+	removed, ok := mgr.GetByID("auth-events-delete")
+	if !ok {
+		t.Fatalf("auth missing")
+	}
+	removed.Disabled = true
+	removed.Status = StatusDisabled
+	removed.StatusMessage = "removed via management API"
+	if _, errUpdate := mgr.Update(context.Background(), removed); errUpdate != nil {
+		t.Fatalf("removed update: %v", errUpdate)
+	}
+
+	if count := mgr.Auto429EventCount("auth-events-delete"); count != 0 {
+		t.Fatalf("expected auto-429 events to be removed with deleted auth, got %d", count)
+	}
+	if _, okSnapshot := mgr.Auto429Snapshot("auth-events-delete"); okSnapshot {
+		t.Fatalf("expected auto-429 snapshot to be removed")
+	}
+}
+
+func TestAuto429EventsRemovedWhenAuthMissingOnLoad(t *testing.T) {
+	store := &captureStore{}
+	mgr := NewManager(store, nil, nil)
+	auth := &Auth{
+		ID:       "auth-events-missing",
+		Provider: "test-provider",
+		Metadata: map[string]any{"auto_disable_429_threshold": 1},
+	}
+	if _, errRegister := mgr.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-events-missing",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+	if count := mgr.Auto429EventCount("auth-events-missing"); count == 0 {
+		t.Fatalf("expected auto-429 events before load")
+	}
+	if !mgr.ClearAuto429State("auth-events-missing") {
+		t.Fatalf("expected auto-429 state to clear before missing-auth load")
+	}
+	if _, okSnapshot := mgr.Auto429Snapshot("auth-events-missing"); okSnapshot {
+		t.Fatalf("expected auto-429 snapshot to be removed before load")
+	}
+
+	store.mu.Lock()
+	store.items = nil
+	store.mu.Unlock()
+	if errLoad := mgr.Load(context.Background()); errLoad != nil {
+		t.Fatalf("load: %v", errLoad)
+	}
+
+	if count := mgr.Auto429EventCount("auth-events-missing"); count != 0 {
+		t.Fatalf("expected auto-429 events to be removed for missing auth, got %d", count)
 	}
 }
 

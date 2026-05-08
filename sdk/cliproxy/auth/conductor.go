@@ -327,6 +327,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 				auth.StatusMessage = ""
 				auth.Status = StatusActive
 			}
+			m.reapplyAuto429StateLocked(auth, now)
 			auth.UpdatedAt = now
 			persistAuth := m.authForAuto429SafePersistLocked(auth)
 			if errPersist := m.persist(ctx, persistAuth); errPersist != nil {
@@ -1186,6 +1187,21 @@ func (m *Manager) Load(ctx context.Context) error {
 		}
 		auth.EnsureIndex()
 		m.auths[auth.ID] = auth.Clone()
+	}
+	now := time.Now()
+	for authID := range m.auto429 {
+		auth := m.auths[authID]
+		if auth == nil {
+			m.clearAuto429StateWithEventLocked(authID, now, "auth missing, auto-429 cleared")
+			m.deleteAuto429EventsLocked(authID)
+			continue
+		}
+		m.reapplyAuto429StateLocked(auth, now)
+	}
+	for authID := range m.auto429Events {
+		if m.auths[authID] == nil {
+			m.deleteAuto429EventsLocked(authID)
+		}
 	}
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 	if cfg == nil {

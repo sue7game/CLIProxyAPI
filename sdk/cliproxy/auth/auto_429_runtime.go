@@ -13,6 +13,12 @@ import (
 const auto429DisabledStatusMessage = "auto disabled after consecutive 429"
 const auto429MaxEventsPerAuth = 50
 
+const (
+	auto429EventCleared  = "cleared"
+	auto429EventDisabled = "disabled"
+	auto429EventRestored = "restored"
+)
+
 type auto429ProbeContextKey struct{}
 
 type auto429State struct {
@@ -49,6 +55,11 @@ type Auto429Event struct {
 	Type   string    `json:"type"`
 	Model  string    `json:"model"`
 	Result string    `json:"result"`
+}
+
+// Auto429DisabledStatusMessage returns the runtime status shown for auto-429 disabled auths.
+func Auto429DisabledStatusMessage() string {
+	return auto429DisabledStatusMessage
 }
 
 func contextWithAuto429Probe(ctx context.Context) context.Context {
@@ -196,16 +207,13 @@ func (m *Manager) ClearAuto429State(authID string) bool {
 
 	m.mu.Lock()
 	auth := m.auths[authID]
-	if m.clearAuto429StateLocked(authID) && auth != nil {
-		auth.Disabled = false
-		clearAuthStateOnSuccess(auth, now)
-		clearedModels = resetAllModelStates(auth, now)
-		m.appendAuto429EventLocked(authID, Auto429Event{
-			Time:   now,
-			Type:   "cleared",
-			Result: "cleared",
-		})
-		snapshot = auth.Clone()
+	if m.clearAuto429StateWithEventLocked(authID, now, "cleared") && auth != nil {
+		if !shouldPreserveManualDisableOnAuto429Clear(auth) {
+			auth.Disabled = false
+			clearAuthStateOnSuccess(auth, now)
+			clearedModels = resetAllModelStates(auth, now)
+			snapshot = auth.Clone()
+		}
 	}
 	m.mu.Unlock()
 
@@ -219,6 +227,13 @@ func (m *Manager) ClearAuto429State(authID string) bool {
 	return snapshot != nil
 }
 
+func (m *Manager) deleteAuto429EventsLocked(authID string) {
+	if m == nil || strings.TrimSpace(authID) == "" {
+		return
+	}
+	delete(m.auto429Events, strings.TrimSpace(authID))
+}
+
 // ForgetAuto429State drops runtime-only auto-429 state without changing the auth.
 func (m *Manager) ForgetAuto429State(authID string) {
 	if m == nil {
@@ -229,19 +244,34 @@ func (m *Manager) ForgetAuto429State(authID string) {
 		return
 	}
 	m.mu.Lock()
-	delete(m.auto429, authID)
+	m.clearAuto429StateWithEventLocked(authID, time.Now(), "manual disabled, auto-429 cleared")
 	m.mu.Unlock()
 }
 
-func (m *Manager) clearAuto429StateLocked(authID string) bool {
+func (m *Manager) clearAuto429StateWithEventLocked(authID string, now time.Time, result string) bool {
 	if m == nil || strings.TrimSpace(authID) == "" {
 		return false
 	}
+	authID = strings.TrimSpace(authID)
 	st := m.auto429[authID]
 	if st == nil {
 		return false
 	}
 	delete(m.auto429, authID)
+	if st.autoDisabled {
+		if now.IsZero() {
+			now = time.Now()
+		}
+		result = strings.TrimSpace(result)
+		if result == "" {
+			result = "cleared"
+		}
+		m.appendAuto429EventLocked(authID, Auto429Event{
+			Time:   now,
+			Type:   auto429EventCleared,
+			Result: result,
+		})
+	}
 	return st.autoDisabled
 }
 
@@ -258,7 +288,10 @@ func (m *Manager) forgetAuto429ForManualDisableLocked(auth *Auth) {
 		return
 	}
 	if isExplicitManualDisableUpdate(auth) {
-		delete(m.auto429, auth.ID)
+		m.clearAuto429StateWithEventLocked(auth.ID, time.Now(), "manual disabled, auto-429 cleared")
+		if isRemovedManualDisableUpdate(auth) {
+			m.deleteAuto429EventsLocked(auth.ID)
+		}
 	}
 }
 
@@ -273,6 +306,42 @@ func isExplicitManualDisableUpdate(auth *Auth) bool {
 	}
 	msg := strings.ToLower(strings.TrimSpace(auth.StatusMessage))
 	return strings.HasPrefix(msg, "disabled") || strings.HasPrefix(msg, "removed")
+}
+
+func isRemovedManualDisableUpdate(auth *Auth) bool {
+	if auth == nil || !auth.Disabled {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(auth.StatusMessage))
+	return strings.HasPrefix(msg, "removed")
+}
+
+func shouldPreserveManualDisableOnAuto429Clear(auth *Auth) bool {
+	if auth == nil || !auth.Disabled || auth.StatusMessage == auto429DisabledStatusMessage {
+		return false
+	}
+	if isExplicitManualDisableUpdate(auth) {
+		return true
+	}
+	if auth.Status != StatusDisabled {
+		return false
+	}
+	return !looksLikeAuto429RuntimeFailure(auth)
+}
+
+func looksLikeAuto429RuntimeFailure(auth *Auth) bool {
+	if auth == nil {
+		return false
+	}
+	if auth.LastError != nil && auth.LastError.HTTPStatus == http.StatusTooManyRequests {
+		return true
+	}
+	msg := strings.ToLower(strings.TrimSpace(auth.StatusMessage))
+	return strings.Contains(msg, "429") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "resource exhausted") ||
+		strings.Contains(msg, "resource has been exhausted") ||
+		strings.Contains(msg, "quota")
 }
 
 func (m *Manager) authForAuto429SafePersistLocked(auth *Auth) *Auth {
@@ -305,18 +374,15 @@ func clearAuto429RuntimeDisable(auth *Auth, now time.Time) {
 		return
 	}
 	auth.Disabled = false
-	if auth.StatusMessage == auto429DisabledStatusMessage {
-		if auth.Status == StatusDisabled {
-			auth.Status = StatusActive
-		}
-		auth.StatusMessage = ""
-	}
+	auth.Status = StatusActive
+	auth.StatusMessage = ""
+	auth.LastError = nil
+	auth.Unavailable = false
+	auth.NextRetryAfter = time.Time{}
 	if auth.Metadata != nil {
 		auth.Metadata["disabled"] = false
 	}
 	if !now.IsZero() {
-		auth.Unavailable = false
-		auth.NextRetryAfter = time.Time{}
 		auth.UpdatedAt = now
 	}
 }
@@ -333,8 +399,8 @@ func (m *Manager) reapplyAuto429StateLocked(auth *Auth, now time.Time) {
 		return
 	}
 	if auth.AutoDisable429Threshold() <= 0 {
-		delete(m.auto429, auth.ID)
-		if auth.StatusMessage == auto429DisabledStatusMessage {
+		cleared := m.clearAuto429StateWithEventLocked(auth.ID, now, "threshold disabled, auto-429 cleared")
+		if cleared || auth.StatusMessage == auto429DisabledStatusMessage {
 			clearAuto429RuntimeDisable(auth, now)
 		}
 		return
@@ -345,6 +411,7 @@ func (m *Manager) reapplyAuto429StateLocked(auth *Auth, now time.Time) {
 	auth.Disabled = true
 	auth.Status = StatusDisabled
 	auth.StatusMessage = auto429DisabledStatusMessage
+	auth.LastError = nil
 	auth.Unavailable = false
 	auth.NextRetryAfter = time.Time{}
 	auth.UpdatedAt = now
@@ -356,7 +423,9 @@ func (m *Manager) recordAuto429ResultLocked(ctx context.Context, auth *Auth, res
 	}
 	threshold := auth.AutoDisable429Threshold()
 	if threshold <= 0 {
-		delete(m.auto429, auth.ID)
+		if m.clearAuto429StateWithEventLocked(auth.ID, now, "threshold disabled, auto-429 cleared") {
+			clearAuto429RuntimeDisable(auth, now)
+		}
 		return
 	}
 	if m.auto429 == nil {
@@ -398,13 +467,14 @@ func (m *Manager) recordAuto429ResultLocked(ctx context.Context, auth *Auth, res
 	st.nextRecheckAt = now.Add(time.Duration(auth.Auto429RecheckIntervalSeconds()) * time.Second)
 	m.appendAuto429EventLocked(auth.ID, Auto429Event{
 		Time:   now,
-		Type:   "disabled",
+		Type:   auto429EventDisabled,
 		Model:  st.last429Model,
 		Result: "auto disabled after consecutive 429",
 	})
 	auth.Disabled = true
 	auth.Status = StatusDisabled
 	auth.StatusMessage = auto429DisabledStatusMessage
+	auth.LastError = nil
 	auth.Unavailable = false
 	auth.NextRetryAfter = time.Time{}
 	auth.UpdatedAt = now

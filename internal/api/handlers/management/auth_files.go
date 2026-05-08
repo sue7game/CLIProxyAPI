@@ -405,6 +405,11 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		if snapshot, ok := h.authManager.Auto429Snapshot(auth.ID); ok {
 			entry["auto_429_count"] = snapshot.Count
 			entry["auto_disabled_by_429"] = snapshot.AutoDisabled
+			if snapshot.AutoDisabled {
+				entry["disabled"] = true
+				entry["status"] = coreauth.StatusDisabled
+				entry["status_message"] = coreauth.Auto429DisabledStatusMessage()
+			}
 			if !snapshot.DisabledAt.IsZero() {
 				entry["auto_disabled_429_at"] = snapshot.DisabledAt
 			}
