@@ -142,6 +142,10 @@ func TestAuto429DisablesAfterThresholdAndClears(t *testing.T) {
 		t.Fatalf("expected count=1 and not disabled, got %#v ok=%v", snapshot, ok)
 	}
 
+	mgr.mu.Lock()
+	mgr.auto429["auth-1"].countWindowStartedAt = time.Now().Add(-61 * time.Second)
+	mgr.mu.Unlock()
+
 	mgr.MarkResult(context.Background(), Result{
 		AuthID: "auth-1",
 		Model:  "model-a",
@@ -171,6 +175,203 @@ func TestAuto429DisablesAfterThresholdAndClears(t *testing.T) {
 	}
 	if _, okSnapshot := mgr.Auto429Snapshot("auth-1"); okSnapshot {
 		t.Fatalf("expected auto-429 snapshot to be removed")
+	}
+}
+
+func TestAuto429CountsAtMostOneThirdThresholdPerMinute(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-minute-cap",
+		Provider: "test-provider",
+		Metadata: map[string]any{
+			"auto_disable_429_threshold": 6,
+			"auto_429_recheck_interval":  600,
+		},
+	}
+	if _, errRegister := mgr.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	for i := 0; i < 5; i++ {
+		mgr.MarkResult(context.Background(), Result{
+			AuthID: "auth-minute-cap",
+			Model:  "model-a",
+			Error:  &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+		})
+	}
+	snapshot, ok := mgr.Auto429Snapshot("auth-minute-cap")
+	if !ok || snapshot.Count != 2 || snapshot.AutoDisabled {
+		t.Fatalf("expected first minute to count only 2 events, got %#v ok=%v", snapshot, ok)
+	}
+
+	for window := 0; window < 2; window++ {
+		mgr.mu.Lock()
+		mgr.auto429["auth-minute-cap"].countWindowStartedAt = time.Now().Add(-61 * time.Second)
+		mgr.mu.Unlock()
+
+		for i := 0; i < 2; i++ {
+			mgr.MarkResult(context.Background(), Result{
+				AuthID: "auth-minute-cap",
+				Model:  "model-a",
+				Error:  &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+			})
+		}
+	}
+
+	got, ok := mgr.GetByID("auth-minute-cap")
+	if !ok || !got.Disabled || got.Status != StatusDisabled {
+		t.Fatalf("expected auth disabled after capped events across three windows, got %#v ok=%v", got, ok)
+	}
+}
+
+func TestAuto429IdleAfterRecheckIntervalResetsPendingCount(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-idle-reset",
+		Provider: "test-provider",
+		Metadata: map[string]any{
+			"auto_disable_429_threshold": 6,
+			"auto_429_recheck_interval":  60,
+		},
+	}
+	if _, errRegister := mgr.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-idle-reset",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+	mgr.mu.Lock()
+	mgr.auto429["auth-idle-reset"].last429At = time.Now().Add(-2 * time.Minute)
+	mgr.mu.Unlock()
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-idle-reset",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+
+	snapshot, ok := mgr.Auto429Snapshot("auth-idle-reset")
+	if !ok || snapshot.Count != 1 || snapshot.AutoDisabled {
+		t.Fatalf("expected idle gap to restart pending count at 1, got %#v ok=%v", snapshot, ok)
+	}
+}
+
+func TestAuto429CountsRateLimitedBadRequestOnly(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-400",
+		Provider: "test-provider",
+		Metadata: map[string]any{"auto_disable_429_threshold": 6},
+	}
+	if _, errRegister := mgr.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-400",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusBadRequest, Message: "RESOURCE_EXHAUSTED: Resource has been exhausted"},
+	})
+	snapshot, ok := mgr.Auto429Snapshot("auth-400")
+	if !ok || snapshot.Count != 1 {
+		t.Fatalf("expected quota-like 400 to count as auto-429, got %#v ok=%v", snapshot, ok)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-400",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusBadRequest, Message: "invalid_request_error: bad request"},
+	})
+	snapshot, ok = mgr.Auto429Snapshot("auth-400")
+	if !ok || snapshot.Count != 0 {
+		t.Fatalf("expected ordinary 400 to reset pending auto-429 count, got %#v ok=%v", snapshot, ok)
+	}
+}
+
+func TestAuto429BadRequestMatching(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     *Error
+		want429 bool
+	}{
+		{
+			name:    "usage limit reached",
+			err:     &Error{HTTPStatus: http.StatusBadRequest, Message: "Usage limit reached for this account"},
+			want429: true,
+		},
+		{
+			name:    "quota limit reached",
+			err:     &Error{HTTPStatus: http.StatusBadRequest, Message: "quota limit reached"},
+			want429: true,
+		},
+		{
+			name:    "rate limit reached",
+			err:     &Error{HTTPStatus: http.StatusBadRequest, Message: "rate limit reached"},
+			want429: true,
+		},
+		{
+			name:    "resource exhausted code",
+			err:     &Error{HTTPStatus: http.StatusBadRequest, Code: "RESOURCE_EXHAUSTED"},
+			want429: true,
+		},
+		{
+			name:    "context length limit",
+			err:     &Error{HTTPStatus: http.StatusBadRequest, Message: "context length limit reached"},
+			want429: false,
+		},
+		{
+			name:    "max tokens limit",
+			err:     &Error{HTTPStatus: http.StatusBadRequest, Message: "max tokens limit reached"},
+			want429: false,
+		},
+		{
+			name:    "unsupported model",
+			err:     &Error{HTTPStatus: http.StatusBadRequest, Message: "unsupported model"},
+			want429: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isAuto429CountableResult(tt.err); got != tt.want429 {
+				t.Fatalf("isAuto429CountableResult() = %v, want %v", got, tt.want429)
+			}
+		})
+	}
+}
+
+func TestAuto429LikeBadRequestDoesNotApplyQuotaCooldown(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-400-no-cooldown",
+		Provider: "test-provider",
+		Metadata: map[string]any{"auto_disable_429_threshold": 6},
+	}
+	if _, errRegister := mgr.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: "auth-400-no-cooldown",
+		Model:  "model-a",
+		Error:  &Error{HTTPStatus: http.StatusBadRequest, Message: "RESOURCE_EXHAUSTED: Resource has been exhausted"},
+	})
+
+	got, ok := mgr.GetByID("auth-400-no-cooldown")
+	if !ok {
+		t.Fatalf("auth missing")
+	}
+	state := got.ModelStates["model-a"]
+	if state == nil {
+		t.Fatalf("model state missing")
+	}
+	if !state.NextRetryAfter.IsZero() || state.Quota.Exceeded {
+		t.Fatalf("expected quota-like 400 to avoid 429 cooldown/quota state, got nextRetry=%v quota=%#v", state.NextRetryAfter, state.Quota)
+	}
+	if got.Unavailable || !got.NextRetryAfter.IsZero() || got.Quota.Exceeded {
+		t.Fatalf("expected auth to remain schedulable after quota-like 400, got unavailable=%v nextRetry=%v quota=%#v", got.Unavailable, got.NextRetryAfter, got.Quota)
 	}
 }
 

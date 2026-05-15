@@ -22,18 +22,20 @@ const (
 type auto429ProbeContextKey struct{}
 
 type auto429State struct {
-	consecutive429      int
-	autoDisabled        bool
-	disabledAt          time.Time
-	last429At           time.Time
-	last429Model        string
-	nextRecheckAt       time.Time
-	lastCountedRequest  string
-	lastProbeModel      string
-	lastProbeStatusCode int
-	lastProbeError      string
-	probing             bool
-	probeStartedAt      time.Time
+	consecutive429       int
+	autoDisabled         bool
+	disabledAt           time.Time
+	last429At            time.Time
+	last429Model         string
+	nextRecheckAt        time.Time
+	lastCountedRequest   string
+	countWindowStartedAt time.Time
+	countWindowCount     int
+	lastProbeModel       string
+	lastProbeStatusCode  int
+	lastProbeError       string
+	probing              bool
+	probeStartedAt       time.Time
 }
 
 // Auto429Snapshot exposes runtime-only auto-disable state for management output.
@@ -432,11 +434,12 @@ func (m *Manager) recordAuto429ResultLocked(ctx context.Context, auth *Auth, res
 		m.auto429 = make(map[string]*auto429State)
 	}
 
-	status := statusCodeFromResult(result.Error)
-	if result.Success || status != http.StatusTooManyRequests {
+	if result.Success || !isAuto429CountableResult(result.Error) {
 		if st := m.auto429[auth.ID]; st != nil && !st.autoDisabled {
 			st.consecutive429 = 0
 			st.lastCountedRequest = ""
+			st.countWindowStartedAt = time.Time{}
+			st.countWindowCount = 0
 		}
 		return
 	}
@@ -451,12 +454,17 @@ func (m *Manager) recordAuto429ResultLocked(ctx context.Context, auth *Auth, res
 		return
 	}
 
-	st.consecutive429++
-	st.lastCountedRequest = requestID
+	resetPendingAuto429CountIfIdle(st, auth, now)
 	st.last429At = now
 	if model := strings.TrimSpace(result.Model); model != "" {
 		st.last429Model = model
 	}
+	if !consumeAuto429CountWindow(st, threshold, now) {
+		return
+	}
+
+	st.consecutive429++
+	st.lastCountedRequest = requestID
 
 	if st.consecutive429 < threshold || st.autoDisabled {
 		return
@@ -478,6 +486,106 @@ func (m *Manager) recordAuto429ResultLocked(ctx context.Context, auth *Auth, res
 	auth.Unavailable = false
 	auth.NextRetryAfter = time.Time{}
 	auth.UpdatedAt = now
+}
+
+func isAuto429CountableResult(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	switch statusCodeFromResult(err) {
+	case http.StatusTooManyRequests:
+		return true
+	case http.StatusBadRequest:
+		return isAuto429LikeBadRequest(err)
+	default:
+		return false
+	}
+}
+
+func isAuto429LikeBadRequest(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{
+		err.Code,
+		err.Message,
+	}, " ")))
+	if text == "" {
+		return false
+	}
+	excludedPatterns := [...]string{
+		"invalid_request_error",
+		"context length",
+		"max tokens",
+		"unsupported model",
+		"model_not_supported",
+	}
+	for _, pattern := range excludedPatterns {
+		if strings.Contains(text, pattern) {
+			return false
+		}
+	}
+	strongPatterns := [...]string{
+		"quota",
+		"rate limit",
+		"rate_limit",
+		"too many requests",
+		"resource exhausted",
+		"resource_exhausted",
+		"resource has been exhausted",
+	}
+	for _, pattern := range strongPatterns {
+		if strings.Contains(text, pattern) {
+			return true
+		}
+	}
+	if strings.Contains(text, "limit reached") {
+		return strings.Contains(text, "usage") ||
+			strings.Contains(text, "quota") ||
+			strings.Contains(text, "rate")
+	}
+	return false
+}
+
+func resetPendingAuto429CountIfIdle(st *auto429State, auth *Auth, now time.Time) {
+	if st == nil || auth == nil || st.autoDisabled || st.last429At.IsZero() {
+		return
+	}
+	idle := time.Duration(auth.Auto429RecheckIntervalSeconds()) * time.Second
+	if idle <= 0 || now.Sub(st.last429At) <= idle {
+		return
+	}
+	st.consecutive429 = 0
+	st.lastCountedRequest = ""
+	st.countWindowStartedAt = time.Time{}
+	st.countWindowCount = 0
+}
+
+func consumeAuto429CountWindow(st *auto429State, threshold int, now time.Time) bool {
+	if st == nil || threshold <= 0 {
+		return false
+	}
+	if st.countWindowStartedAt.IsZero() || now.Sub(st.countWindowStartedAt) >= time.Minute {
+		st.countWindowStartedAt = now
+		st.countWindowCount = 0
+	}
+	limit := maxAuto429CountPerMinute(threshold)
+	if st.countWindowCount >= limit {
+		return false
+	}
+	st.countWindowCount++
+	return true
+}
+
+func maxAuto429CountPerMinute(threshold int) int {
+	if threshold <= 0 {
+		return 0
+	}
+	limit := threshold / 3
+	if limit < 1 {
+		return 1
+	}
+	return limit
 }
 
 func resetAllModelStates(auth *Auth, now time.Time) []string {
