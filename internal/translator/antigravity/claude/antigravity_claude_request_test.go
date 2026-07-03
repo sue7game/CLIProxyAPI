@@ -112,6 +112,38 @@ func assertSignatureDebugDoesNotLeak(t *testing.T, hook *test.Hook, forbidden st
 	}
 }
 
+func TestConvertClaudeRequestToAntigravity_TrimsFinalAssistantTrailingWhitespace(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-6",
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "Hello"}]},
+			{"role": "assistant", "content": [{"type": "text", "text": "partial answer \n	"}]}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-6", inputJSON, false)
+
+	if got := gjson.GetBytes(output, "request.contents.1.parts.0.text").String(); got != "partial answer" {
+		t.Fatalf("final assistant text = %q, want partial answer: %s", got, output)
+	}
+}
+
+func TestConvertClaudeRequestToAntigravity_DoesNotTrimNonFinalAssistant(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-6",
+		"messages": [
+			{"role": "assistant", "content": [{"type": "text", "text": "keep trailing \n"}]},
+			{"role": "user", "content": [{"type": "text", "text": "next"}]}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-6", inputJSON, false)
+
+	if got := gjson.GetBytes(output, "request.contents.0.parts.0.text").String(); got != "keep trailing \n" {
+		t.Fatalf("non-final assistant text = %q, want preserved trailing newline: %s", got, output)
+	}
+}
+
 func TestConvertClaudeRequestToAntigravity_StripsClaudeCodeAttribution(t *testing.T) {
 	inputJSON := []byte(`{
 		"model": "claude-sonnet-4-5",

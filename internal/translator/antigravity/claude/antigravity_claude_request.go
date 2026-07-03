@@ -309,7 +309,7 @@ func logDroppedAntigravityToolUseSignature(modelName string, messageIndex, conte
 //   - []byte: The transformed request data in Antigravity API format
 func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ bool) []byte {
 	enableThoughtTranslate := true
-	rawJSON := inputRawJSON
+	rawJSON := translatorcommon.SanitizeFinalAssistantMessageText(inputRawJSON)
 	if shouldBuildAntigravityWebSearchRequest(modelName, rawJSON) {
 		return buildAntigravityWebSearchRequest(modelName, rawJSON)
 	}

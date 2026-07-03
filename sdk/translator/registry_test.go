@@ -128,6 +128,32 @@ func TestTranslateRequest_FallbackNormalizesModel(t *testing.T) {
 	}
 }
 
+func TestTranslateRequest_SanitizesFinalAssistantForClaudeTarget(t *testing.T) {
+	r := NewRegistry()
+	r.Register(FormatOpenAI, FormatClaude, func(model string, rawJSON []byte, stream bool) []byte {
+		return []byte(`{"model":"claude-sonnet","messages":[{"role":"assistant","content":"prefill \n"}]}`)
+	}, ResponseTransform{})
+
+	got := r.TranslateRequest(FormatOpenAI, FormatClaude, "claude-sonnet", []byte(`{"model":"input"}`), false)
+
+	if text := gjson.GetBytes(got, "messages.0.content").String(); text != "prefill" {
+		t.Fatalf("final assistant content = %q, want prefill", text)
+	}
+}
+
+func TestTranslateRequest_DoesNotSanitizeFinalAssistantForNonClaudeTarget(t *testing.T) {
+	r := NewRegistry()
+	r.Register(FormatOpenAI, FormatAntigravity, func(model string, rawJSON []byte, stream bool) []byte {
+		return []byte(`{"messages":[{"role":"assistant","content":"prefill \n"}]}`)
+	}, ResponseTransform{})
+
+	got := r.TranslateRequest(FormatOpenAI, FormatAntigravity, "claude-sonnet", []byte(`{"model":"input"}`), false)
+
+	if text := gjson.GetBytes(got, "messages.0.content").String(); text != "prefill \n" {
+		t.Fatalf("final assistant content = %q, want preserved trailing newline", text)
+	}
+}
+
 func TestTranslateRequest_RegisteredTransformTakesPrecedence(t *testing.T) {
 	r := NewRegistry()
 	from := Format("openai-response")

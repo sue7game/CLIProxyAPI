@@ -6,6 +6,38 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertOpenAIRequestToAntigravityTrimsFinalAssistantTrailingWhitespace(t *testing.T) {
+	inputJSON := `{
+		"model": "claude-sonnet-4-6",
+		"messages": [
+			{"role": "user", "content": "Hello"},
+			{"role": "assistant", "content": "partial answer \n"}
+		]
+	}`
+
+	result := ConvertOpenAIRequestToAntigravity("claude-sonnet-4-6", []byte(inputJSON), false)
+
+	if got := gjson.GetBytes(result, "request.contents.1.parts.0.text").String(); got != "partial answer" {
+		t.Fatalf("final assistant text = %q, want partial answer. Output: %s", got, result)
+	}
+}
+
+func TestConvertOpenAIRequestToAntigravityDoesNotTrimNonFinalAssistant(t *testing.T) {
+	inputJSON := `{
+		"model": "claude-sonnet-4-6",
+		"messages": [
+			{"role": "assistant", "content": "keep trailing \n"},
+			{"role": "user", "content": "next"}
+		]
+	}`
+
+	result := ConvertOpenAIRequestToAntigravity("claude-sonnet-4-6", []byte(inputJSON), false)
+
+	if got := gjson.GetBytes(result, "request.contents.0.parts.0.text").String(); got != "keep trailing \n" {
+		t.Fatalf("non-final assistant text = %q, want preserved trailing newline. Output: %s", got, result)
+	}
+}
+
 func TestConvertOpenAIRequestToAntigravitySkipsEmptyTextPartsWithoutNulls(t *testing.T) {
 	inputJSON := `{
 		"model": "gemini-3-flash",
