@@ -130,6 +130,108 @@ func TestAntigravityBuildRequest_UsesRouteModelWhenPayloadContainsDifferentModel
 	}
 }
 
+func TestAntigravityBuildRequest_RewritesClaudeFinalModelTextPrefill(t *testing.T) {
+	body := buildRequestBodyFromRawPayload(t, "claude-opus-4-6", []byte(`{
+		"request": {
+			"contents": [
+				{"role": "user", "parts": [{"text": "Return JSON"}]},
+				{"role": "model", "parts": [{"text": "{"}]}
+			]
+		}
+	}`))
+
+	contents := requestContents(t, body)
+	if len(contents) != 1 {
+		t.Fatalf("contents length = %d, want 1: %v", len(contents), contents)
+	}
+	user := asMap(t, contents[0], "contents[0]")
+	if got := user["role"]; got != "user" {
+		t.Fatalf("final role = %v, want user", got)
+	}
+	parts := asSlice(t, user["parts"], "contents[0].parts")
+	if got := asMap(t, parts[0], "parts[0]")["text"]; got != "Return JSON" {
+		t.Fatalf("original user text changed: %v", got)
+	}
+	instruction := asMap(t, parts[1], "parts[1]")["text"].(string)
+	if !strings.Contains(instruction, "Prefix:\n{") {
+		t.Fatalf("prefill prefix missing from instruction: %q", instruction)
+	}
+}
+
+func TestAntigravityBuildRequest_LeavesClaudeFinalUserUnchanged(t *testing.T) {
+	body := buildRequestBodyFromRawPayload(t, "claude-opus-4-6", []byte(`{
+		"request": {
+			"contents": [
+				{"role": "user", "parts": [{"text": "First"}]},
+				{"role": "model", "parts": [{"text": "Answer"}]},
+				{"role": "user", "parts": [{"text": "Next"}]}
+			]
+		}
+	}`))
+
+	contents := requestContents(t, body)
+	if len(contents) != 3 {
+		t.Fatalf("contents length = %d, want 3: %v", len(contents), contents)
+	}
+	finalUser := asMap(t, contents[2], "contents[2]")
+	if got := finalUser["role"]; got != "user" {
+		t.Fatalf("final role = %v, want user", got)
+	}
+	parts := asSlice(t, finalUser["parts"], "contents[2].parts")
+	if len(parts) != 1 {
+		t.Fatalf("final user parts length = %d, want 1", len(parts))
+	}
+	if got := asMap(t, parts[0], "parts[0]")["text"]; got != "Next" {
+		t.Fatalf("final user text = %v, want Next", got)
+	}
+}
+
+func TestAntigravityBuildRequest_LeavesClaudeFinalFunctionCallUnchanged(t *testing.T) {
+	body := buildRequestBodyFromRawPayload(t, "claude-opus-4-6", []byte(`{
+		"request": {
+			"contents": [
+				{"role": "user", "parts": [{"text": "Call a tool"}]},
+				{"role": "model", "parts": [{"functionCall": {"name": "read_file", "args": {"path": "a.txt"}}}]}
+			]
+		}
+	}`))
+
+	contents := requestContents(t, body)
+	if len(contents) != 2 {
+		t.Fatalf("contents length = %d, want 2: %v", len(contents), contents)
+	}
+	finalModel := asMap(t, contents[1], "contents[1]")
+	if got := finalModel["role"]; got != "model" {
+		t.Fatalf("final role = %v, want model", got)
+	}
+	parts := asSlice(t, finalModel["parts"], "contents[1].parts")
+	if _, ok := asMap(t, parts[0], "parts[0]")["functionCall"]; !ok {
+		t.Fatalf("functionCall should be preserved: %v", parts[0])
+	}
+}
+
+func TestAntigravityBuildRequest_ClampsClaudeTemperatureOnly(t *testing.T) {
+	high := buildRequestBodyFromRawPayload(t, "claude-opus-4-6", []byte(`{
+		"request": {"contents": [{"role": "user", "parts": [{"text": "hi"}]}], "generationConfig": {"temperature": 2}}
+	}`))
+	low := buildRequestBodyFromRawPayload(t, "claude-opus-4-6", []byte(`{
+		"request": {"contents": [{"role": "user", "parts": [{"text": "hi"}]}], "generationConfig": {"temperature": -0.5}}
+	}`))
+	gemini := buildRequestBodyFromRawPayload(t, "gemini-3.1-pro", []byte(`{
+		"request": {"contents": [{"role": "user", "parts": [{"text": "hi"}]}], "generationConfig": {"temperature": 2}}
+	}`))
+
+	if got := requestGenerationConfig(t, high)["temperature"]; got != float64(1) {
+		t.Fatalf("high claude temperature = %v, want 1", got)
+	}
+	if got := requestGenerationConfig(t, low)["temperature"]; got != float64(0) {
+		t.Fatalf("low claude temperature = %v, want 0", got)
+	}
+	if got := requestGenerationConfig(t, gemini)["temperature"]; got != float64(2) {
+		t.Fatalf("gemini temperature = %v, want 2", got)
+	}
+}
+
 func TestAntigravityBuildRequest_PreservesIndependentWebSearchRequestType(t *testing.T) {
 	body := buildRequestBodyFromRawPayload(t, "gemini-3.1-flash-lite", []byte(`{
 		"requestType": "web_search",
@@ -358,6 +460,40 @@ func requestBody(t *testing.T, req *http.Request) map[string]any {
 		t.Fatalf("unmarshal request body error: %v, body=%s", err, string(raw))
 	}
 	return body
+}
+
+func requestContents(t *testing.T, body map[string]any) []any {
+	t.Helper()
+
+	request := asMap(t, body["request"], "request")
+	return asSlice(t, request["contents"], "request.contents")
+}
+
+func requestGenerationConfig(t *testing.T, body map[string]any) map[string]any {
+	t.Helper()
+
+	request := asMap(t, body["request"], "request")
+	return asMap(t, request["generationConfig"], "request.generationConfig")
+}
+
+func asMap(t *testing.T, value any, name string) map[string]any {
+	t.Helper()
+
+	mapped, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("%s missing or invalid type: %v", name, value)
+	}
+	return mapped
+}
+
+func asSlice(t *testing.T, value any, name string) []any {
+	t.Helper()
+
+	items, ok := value.([]any)
+	if !ok {
+		t.Fatalf("%s missing or invalid type: %v", name, value)
+	}
+	return items
 }
 
 func extractFirstFunctionDeclaration(t *testing.T, body map[string]any) map[string]any {

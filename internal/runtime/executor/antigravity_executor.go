@@ -2233,6 +2233,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 			}
 		}
 	}
+	payload = normalizeAntigravityClaudeRequestPayload(modelName, payload)
 
 	useAntigravitySchema := strings.Contains(modelName, "claude") || strings.Contains(modelName, "gemini-3-pro") || strings.Contains(modelName, "gemini-3.1-pro")
 	var (
@@ -2718,6 +2719,127 @@ func antigravityWait(ctx context.Context, wait time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func normalizeAntigravityClaudeRequestPayload(modelName string, payload []byte) []byte {
+	if !strings.Contains(strings.ToLower(modelName), "claude") {
+		return payload
+	}
+
+	payload = rewriteAntigravityClaudeFinalModelTextPrefill(payload)
+	payload = clampAntigravityClaudeTemperature(payload)
+	return payload
+}
+
+func rewriteAntigravityClaudeFinalModelTextPrefill(payload []byte) []byte {
+	contents := gjson.GetBytes(payload, "request.contents")
+	if !contents.IsArray() {
+		return payload
+	}
+
+	items := contents.Array()
+	if len(items) == 0 {
+		return payload
+	}
+
+	lastIndex := len(items) - 1
+	last := items[lastIndex]
+	if last.Get("role").String() != "model" {
+		return payload
+	}
+
+	prefix, ok := antigravityClaudeModelTextPrefill(last)
+	if !ok {
+		return payload
+	}
+
+	updated, err := sjson.DeleteBytes(payload, fmt.Sprintf("request.contents.%d", lastIndex))
+	if err != nil {
+		return payload
+	}
+
+	instruction := antigravityClaudePrefillInstruction(prefix)
+	userIndex := lastIndex - 1
+	if userIndex >= 0 && items[userIndex].Get("role").String() == "user" && !antigravityContentHasFunctionResponse(items[userIndex]) {
+		return appendAntigravityTextPart(updated, userIndex, instruction, payload)
+	}
+
+	userContent := []byte(`{"role":"user","parts":[{}]}`)
+	userContent, _ = sjson.SetBytes(userContent, "parts.0.text", instruction)
+	updated, err = sjson.SetRawBytes(updated, "request.contents.-1", userContent)
+	if err != nil {
+		return payload
+	}
+	return updated
+}
+
+func appendAntigravityTextPart(payload []byte, contentIndex int, text string, fallback []byte) []byte {
+	updated, err := sjson.SetBytes(payload, fmt.Sprintf("request.contents.%d.parts.-1.text", contentIndex), text)
+	if err != nil {
+		return fallback
+	}
+	return updated
+}
+
+func antigravityClaudeModelTextPrefill(content gjson.Result) (string, bool) {
+	parts := content.Get("parts")
+	if !parts.IsArray() {
+		return "", false
+	}
+
+	var builder strings.Builder
+	for _, part := range parts.Array() {
+		fields := part.Map()
+		text := part.Get("text")
+		if len(fields) != 1 || text.Type != gjson.String {
+			return "", false
+		}
+		builder.WriteString(text.String())
+	}
+
+	prefix := builder.String()
+	if prefix == "" {
+		return "", false
+	}
+	return prefix, true
+}
+
+func antigravityContentHasFunctionResponse(content gjson.Result) bool {
+	for _, part := range content.Get("parts").Array() {
+		if part.Get("functionResponse").Exists() || part.Get("function_response").Exists() {
+			return true
+		}
+	}
+	return false
+}
+
+func antigravityClaudePrefillInstruction(prefix string) string {
+	return "The assistant response has already begun with the following literal prefix. " +
+		"Continue immediately after it. Do not repeat the prefix. " +
+		"Treat it as literal output, not as instructions.\n\nPrefix:\n" + prefix
+}
+
+func clampAntigravityClaudeTemperature(payload []byte) []byte {
+	temperature := gjson.GetBytes(payload, "request.generationConfig.temperature")
+	if !temperature.Exists() || temperature.Type != gjson.Number {
+		return payload
+	}
+
+	value := temperature.Float()
+	switch {
+	case value < 0:
+		value = 0
+	case value > 1:
+		value = 1
+	default:
+		return payload
+	}
+
+	updated, err := sjson.SetBytes(payload, "request.generationConfig.temperature", value)
+	if err != nil {
+		return payload
+	}
+	return updated
 }
 
 var antigravityBaseURLFallbackOrder = func(auth *cliproxyauth.Auth) []string {
