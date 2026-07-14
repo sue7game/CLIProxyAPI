@@ -263,6 +263,11 @@ type Manager struct {
 	// refreshLocks serializes credential refresh per auth ID so concurrent
 	// 401 recoveries and auto-refresh workers do not race the same refresh_token.
 	refreshLocks sync.Map
+
+	// Auto 429 disable state is runtime-only and intentionally not persisted.
+	auto429              map[string]*auto429State
+	auto429Events        map[string][]Auto429Event
+	auto429RecheckCancel context.CancelFunc
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
@@ -282,6 +287,8 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		homeRuntimeAuths: make(map[string]map[string]*Auth),
 		providerOffsets:  make(map[string]int),
 		modelPoolOffsets: make(map[string]int),
+		auto429:          make(map[string]*auto429State),
+		auto429Events:    make(map[string][]Auto429Event),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
@@ -448,8 +455,10 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 				auth.StatusMessage = ""
 				auth.Status = StatusActive
 			}
+			m.reapplyAuto429StateLocked(auth, now)
 			auth.UpdatedAt = now
-			if errPersist := m.persist(ctx, auth); errPersist != nil {
+			persistAuth := m.authForAuto429SafePersistLocked(auth)
+			if errPersist := m.persist(ctx, persistAuth); errPersist != nil {
 				logEntryWithRequestID(ctx).WithField("auth_id", auth.ID).Warnf("failed to persist auth changes during model state reconciliation: %v", errPersist)
 			}
 			snapshot = auth.Clone()
@@ -2164,6 +2173,9 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	auth.EnsureIndex()
 	authClone := auth.Clone()
 	m.mu.Lock()
+	m.forgetAuto429ForManualDisableLocked(auth)
+	m.reapplyAuto429StateLocked(authClone, now)
+	persistAuth := m.authForAuto429SafePersistLocked(auth)
 	m.auths[auth.ID] = authClone
 	m.mu.Unlock()
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
@@ -2173,7 +2185,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		m.scheduler.upsertAuth(authClone)
 	}
 	m.queueRefreshReschedule(auth.ID)
-	_ = m.persist(ctx, auth)
+	_ = m.persist(ctx, persistAuth)
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
 	if clearedCooldown {
 		m.persistCooldownStates(ctx)
@@ -2211,7 +2223,10 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	auth.EnsureIndex()
 	authClone := auth.Clone()
+	m.forgetAuto429ForManualDisableLocked(auth)
 	m.auths[auth.ID] = authClone
+	m.reapplyAuto429StateLocked(authClone, now)
+	persistAuth := m.authForAuto429SafePersistLocked(auth)
 	m.mu.Unlock()
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
@@ -2220,7 +2235,7 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 		m.scheduler.upsertAuth(authClone)
 	}
 	m.queueRefreshReschedule(auth.ID)
-	_ = m.persist(ctx, auth)
+	_ = m.persist(ctx, persistAuth)
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
 	if clearedCooldown {
 		m.persistCooldownStates(ctx)
@@ -2309,6 +2324,21 @@ func (m *Manager) Load(ctx context.Context) error {
 		}
 		auth.EnsureIndex()
 		m.auths[auth.ID] = auth.Clone()
+	}
+	now := time.Now()
+	for authID := range m.auto429 {
+		auth := m.auths[authID]
+		if auth == nil {
+			m.clearAuto429StateWithEventLocked(authID, now, "auth missing, auto-429 cleared")
+			m.deleteAuto429EventsLocked(authID)
+			continue
+		}
+		m.reapplyAuto429StateLocked(auth, now)
+	}
+	for authID := range m.auto429Events {
+		if m.auths[authID] == nil {
+			m.deleteAuto429EventsLocked(authID)
+		}
 	}
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 	if cfg == nil {
@@ -3840,8 +3870,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				applyAuthFailureState(auth, result.Error, result.RetryAfter, now, disableCooling)
 			}
 		}
-
-		_ = m.persist(ctx, auth)
+		m.recordAuto429ResultLocked(ctx, auth, result, now)
+		m.reapplyAuto429StateLocked(auth, now)
+		persistAuth := m.authForAuto429SafePersistLocked(auth)
+		_ = m.persist(ctx, persistAuth)
 		authSnapshot = auth.Clone()
 		if trackCooldownState {
 			cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)

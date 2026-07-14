@@ -110,6 +110,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 				auth.Attributes[coreauth.AttributePath] = fullPath
 				auth.Attributes[coreauth.AttributeSource] = fullPath
 				auth.Attributes[coreauth.AttributeSourceBackend] = coreauth.AuthSourceFile
+				applyAuto429Metadata(auth, metadata)
 				if disabled {
 					auth.Disabled = true
 					auth.Status = coreauth.StatusDisabled
@@ -246,6 +247,20 @@ func compactPluginAuths(auths []*coreauth.Auth) []*coreauth.Auth {
 		out = append(out, auth)
 	}
 	return out
+}
+
+func applyAuto429Metadata(auth *coreauth.Auth, metadata map[string]any) {
+	if auth == nil || metadata == nil {
+		return
+	}
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	for _, key := range []string{"auto_disable_429_threshold", "auto_429_recheck_interval"} {
+		if value, ok := metadata[key]; ok {
+			auth.Metadata[key] = value
+		}
+	}
 }
 
 // extractOAuthModelAliasesFromMetadata reads per-account model aliases from OAuth JSON metadata.
