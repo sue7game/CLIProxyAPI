@@ -237,6 +237,8 @@ func (m *Manager) patchRuntimeAuthOverrideLocked(
 	}
 	auth.runtimeOverrideRevisions = revisions
 	m.runtimeAuthOverrideRevisions[authIndex] = revisions
+	// Fence delayed lifecycle, result and rebuild snapshots in the native scheduler.
+	auth.Generation++
 	return runtimeAuthOverridePatchResult{
 		auth:            auth.Clone(),
 		revisions:       revisions,
