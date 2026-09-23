@@ -407,21 +407,35 @@ func (h *Host) buildHostAuthFileEntry(auth *coreauth.Auth) *pluginapi.HostAuthFi
 		name = auth.ID
 	}
 	entry := &pluginapi.HostAuthFileEntry{
-		ID:             auth.ID,
-		AuthIndex:      auth.Index,
-		Name:           name,
-		Type:           strings.TrimSpace(auth.Provider),
-		Provider:       strings.TrimSpace(auth.Provider),
-		Label:          auth.Label,
-		Status:         string(auth.Status),
-		StatusMessage:  auth.StatusMessage,
-		Disabled:       auth.Disabled,
-		Unavailable:    auth.Unavailable,
-		RuntimeOnly:    runtimeOnly,
-		Source:         "memory",
-		Success:        auth.Success,
-		Failed:         auth.Failed,
-		RecentRequests: hostRecentRequests(auth),
+		ID:                       auth.ID,
+		AuthIndex:                auth.Index,
+		Name:                     name,
+		Type:                     strings.TrimSpace(auth.Provider),
+		Provider:                 strings.TrimSpace(auth.Provider),
+		Label:                    auth.Label,
+		Status:                   string(auth.Status),
+		StatusMessage:            auth.StatusMessage,
+		Disabled:                 auth.Disabled,
+		ConfiguredDisabled:       auth.Disabled,
+		EffectiveDisabled:        auth.EffectiveDisabled(),
+		Unavailable:              auth.Unavailable,
+		RuntimeOnly:              runtimeOnly,
+		Source:                   "memory",
+		Success:                  auth.Success,
+		Failed:                   auth.Failed,
+		RecentRequests:           hostRecentRequests(auth),
+		RuntimeOverrideRevisions: pluginRuntimeAuthOverrideRevisions(auth.RuntimeAuthOverrideRevisions()),
+	}
+	entry.ConfiguredProxyURL = strings.TrimSpace(auth.ProxyURL)
+	entry.EffectiveProxyURL = strings.TrimSpace(auth.EffectiveProxyURL())
+	if entry.EffectiveProxyURL == "" {
+		if cfg := h.currentRuntimeConfig(); cfg != nil {
+			entry.EffectiveProxyURL = strings.TrimSpace(cfg.ProxyURL)
+		}
+	}
+	if override := auth.RuntimeAuthOverride(); !override.Empty() {
+		converted := pluginRuntimeAuthOverride(override)
+		entry.RuntimeOverride = &converted
 	}
 	if email := authEmail(auth); email != "" {
 		entry.Email = email
@@ -470,6 +484,8 @@ func (h *Host) buildHostAuthFileEntry(auth *coreauth.Auth) *pluginapi.HostAuthFi
 			}
 		}
 	}
+	entry.ConfiguredPriority = entry.Priority
+	entry.EffectivePriority = auth.EffectivePriority()
 	if note := strings.TrimSpace(authAttribute(auth, "note")); note != "" {
 		entry.Note = note
 	} else if auth.Metadata != nil {

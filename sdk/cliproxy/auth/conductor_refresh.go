@@ -495,6 +495,13 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 	_, _ = m.refreshAuthForRequest(ctx, id, "")
 }
 
+// RefreshAuthForRequest refreshes an auth through the manager's serialized
+// provider refresh path. failedAccessToken allows concurrent callers to reuse
+// credentials that another request already refreshed.
+func (m *Manager) RefreshAuthForRequest(ctx context.Context, id, failedAccessToken string) (*Auth, error) {
+	return m.refreshAuthForRequest(ctx, id, failedAccessToken)
+}
+
 // refreshAuthForRequest performs a synchronous credential refresh for the given auth.
 // failedAccessToken lets concurrent callers reuse a refresh that already replaced the
 // access token that produced the unauthorized response.
@@ -585,12 +592,10 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 			}
 			m.auths[id] = current
 			shouldReschedule = true
-			if m.scheduler != nil {
-				m.scheduler.upsertAuth(current.Clone())
-			}
 		}
 		m.mu.Unlock()
 		if shouldReschedule {
+			m.syncSchedulerAuth(id)
 			m.queueRefreshReschedule(id)
 		}
 		return nil, err

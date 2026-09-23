@@ -237,7 +237,7 @@ func TestResponsesHandlerPreservesDirectResponseBeforeFirstFrame(t *testing.T) {
 	if recorder.Code != http.StatusTooManyRequests || recorder.Header().Get("Retry-After") != "17" || recorder.Header().Get("X-Plugin-Response") != "true" {
 		t.Fatalf("direct response status=%d headers=%v body=%q", recorder.Code, recorder.Header(), recorder.Body.String())
 	}
-	if recorder.Body.String() != `{"error":{"message":"plugin direct response"}}` {
+	if !strings.Contains(recorder.Body.String(), "plugin direct response\\n请求内容不符合要求或内容中敏感信息，请调整，不要一直重试") {
 		t.Fatalf("direct response body = %q", recorder.Body.String())
 	}
 }

@@ -109,6 +109,90 @@ func TestAuthLoginPollResponseSupportsMultipleAuths(t *testing.T) {
 	}
 }
 
+func TestHostAuthRuntimeOverrideSchemasRoundTrip(t *testing.T) {
+	disabled := true
+	priority := 13
+	proxyURL := "direct"
+	revision := uint64(7)
+	req := HostAuthSetRuntimeOverrideRequest{
+		AuthIndex:       "auth-index",
+		Disabled:        &disabled,
+		Priority:        &priority,
+		ProxyURL:        &proxyURL,
+		Clear:           []HostAuthRuntimeOverrideField{HostAuthRuntimeOverridePriority},
+		IfRevision:      &revision,
+		IfRevisionField: HostAuthRuntimeOverridePriority,
+	}
+
+	raw, errMarshal := json.Marshal(req)
+	if errMarshal != nil {
+		t.Fatalf("Marshal() error = %v", errMarshal)
+	}
+	var decoded HostAuthSetRuntimeOverrideRequest
+	if errUnmarshal := json.Unmarshal(raw, &decoded); errUnmarshal != nil {
+		t.Fatalf("Unmarshal() error = %v", errUnmarshal)
+	}
+	if decoded.AuthIndex != req.AuthIndex || decoded.Disabled == nil || !*decoded.Disabled {
+		t.Fatalf("decoded request = %#v, want disabled override", decoded)
+	}
+	if decoded.Priority == nil || *decoded.Priority != priority || decoded.ProxyURL == nil || *decoded.ProxyURL != proxyURL {
+		t.Fatalf("decoded request = %#v, want priority and proxy overrides", decoded)
+	}
+	if len(decoded.Clear) != 1 || decoded.Clear[0] != HostAuthRuntimeOverridePriority {
+		t.Fatalf("decoded clear = %#v, want priority", decoded.Clear)
+	}
+	if decoded.IfRevision == nil || *decoded.IfRevision != revision || decoded.IfRevisionField != HostAuthRuntimeOverridePriority {
+		t.Fatalf("decoded revision guard = %#v / %q", decoded.IfRevision, decoded.IfRevisionField)
+	}
+}
+
+func TestHostAuthRuntimeOverrideMultiRevisionSchemaRoundTrip(t *testing.T) {
+	expected := HostAuthRuntimeOverrideRevisions{Disabled: 3, Priority: 7, ProxyURL: 11}
+	req := HostAuthSetRuntimeOverrideRequest{
+		AuthIndex:   "auth-index",
+		Priority:    new(int),
+		IfRevisions: &expected,
+	}
+
+	raw, errMarshal := json.Marshal(req)
+	if errMarshal != nil {
+		t.Fatalf("Marshal() error = %v", errMarshal)
+	}
+	var decoded HostAuthSetRuntimeOverrideRequest
+	if errUnmarshal := json.Unmarshal(raw, &decoded); errUnmarshal != nil {
+		t.Fatalf("Unmarshal() error = %v", errUnmarshal)
+	}
+	if decoded.IfRevisions == nil || *decoded.IfRevisions != expected {
+		t.Fatalf("decoded multi-field revisions = %#v, want %#v", decoded.IfRevisions, expected)
+	}
+}
+
+func TestHostAuthRequestSchemasRoundTripRawBody(t *testing.T) {
+	req := HostAuthRequest{
+		AuthIndex:      "auth-index",
+		HostCallbackID: "callback-123",
+		Method:         http.MethodPost,
+		URL:            "https://example.com/quota",
+		Headers:        http.Header{"Authorization": {"Bearer $TOKEN$"}},
+		Body:           []byte(`{"project":"demo"}`),
+	}
+
+	raw, errMarshal := json.Marshal(req)
+	if errMarshal != nil {
+		t.Fatalf("Marshal() error = %v", errMarshal)
+	}
+	var decoded HostAuthRequest
+	if errUnmarshal := json.Unmarshal(raw, &decoded); errUnmarshal != nil {
+		t.Fatalf("Unmarshal() error = %v", errUnmarshal)
+	}
+	if decoded.AuthIndex != req.AuthIndex || decoded.HostCallbackID != req.HostCallbackID || decoded.Method != http.MethodPost || decoded.URL != req.URL {
+		t.Fatalf("decoded request = %#v, want request identity", decoded)
+	}
+	if decoded.Headers.Get("Authorization") != "Bearer $TOKEN$" || string(decoded.Body) != string(req.Body) {
+		t.Fatalf("decoded request = %#v, want headers and body", decoded)
+	}
+}
+
 func TestResourceRouteMenuFieldsExposeManagementUIHints(t *testing.T) {
 	route := ResourceRoute{
 		Path:        "/status",

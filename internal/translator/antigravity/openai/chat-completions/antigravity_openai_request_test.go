@@ -6,6 +6,26 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertOpenAIRequestToAntigravityStripsTrailingAssistantPrefill(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3.6-flash-high",
+		"messages": [
+			{"role": "user", "content": "hello"},
+			{"role": "assistant", "content": "previous answer"}
+		]
+	}`
+
+	result := ConvertOpenAIRequestToAntigravity("gemini-3.6-flash", []byte(inputJSON), false)
+	contents := gjson.GetBytes(result, "request.contents").Array()
+
+	if len(contents) != 1 {
+		t.Fatalf("contents length = %d, want 1. Output: %s", len(contents), result)
+	}
+	if got := contents[0].Get("role").String(); got != "user" {
+		t.Fatalf("final remaining role = %q, want user. Output: %s", got, result)
+	}
+}
+
 func TestConvertOpenAIRequestToAntigravitySkipsEmptyTextPartsWithoutNulls(t *testing.T) {
 	inputJSON := `{
 		"model": "gemini-3-flash",

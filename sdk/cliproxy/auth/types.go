@@ -94,6 +94,10 @@ type Auth struct {
 	NextRetryAfter time.Time `json:"next_retry_after"`
 	// ModelStates tracks per-model runtime availability data.
 	ModelStates map[string]*ModelState `json:"model_states,omitempty"`
+	// runtimeOverride carries non-persistent routing overrides applied by the host.
+	runtimeOverride RuntimeAuthOverride
+	// runtimeOverrideRevisions fence process-local routing override fields.
+	runtimeOverrideRevisions RuntimeAuthOverrideRevisions
 
 	// Runtime carries non-serialisable data used during execution (in-memory only).
 	Runtime any `json:"-"`
@@ -309,6 +313,7 @@ func (a *Auth) Clone() *Auth {
 			copyAuth.ModelStates[key] = state.Clone()
 		}
 	}
+	copyAuth.runtimeOverride = a.runtimeOverride.Clone()
 	copyAuth.Runtime = a.Runtime
 	return &copyAuth
 }
@@ -451,7 +456,7 @@ func (a *Auth) ProxyInfo() string {
 	if a == nil {
 		return ""
 	}
-	proxyStr := strings.TrimSpace(a.ProxyURL)
+	proxyStr := strings.TrimSpace(a.EffectiveProxyURL())
 	if proxyStr == "" {
 		return ""
 	}

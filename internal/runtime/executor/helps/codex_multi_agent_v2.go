@@ -39,7 +39,11 @@ func RewriteCodexOrphanDelegationInput(ctx context.Context, headers http.Header,
 // TranslateRequestWithCodexMultiAgentV2 normalizes official Codex multi-agent
 // input before translating it to a non-Codex target protocol.
 func TranslateRequestWithCodexMultiAgentV2(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, model string, payload []byte, stream bool) []byte {
-	return multiagentv2.TranslateRequestWithCodexMultiAgentV2(ctx, headers, cfg, from, to, model, payload, stream)
+	translated := multiagentv2.TranslateRequestWithCodexMultiAgentV2(ctx, headers, cfg, from, to, model, payload, stream)
+	if to == sdktranslator.FormatGemini {
+		translated = NormalizeGeminiCandidateCount(translated)
+	}
+	return translated
 }
 
 // TranslateRequestEnvelopeWithCodexMultiAgentV2 normalizes official Codex
@@ -121,7 +125,11 @@ func TranslateRequestWithAPIKeyModelCompatibility(ctx context.Context, headers h
 	}
 
 	summaryConfig := thinking.ExtractSummaryConfig(payload, from.String())
-	return thinking.ApplySummaryConfigForModel(translated, to.String(), model, summaryConfig)
+	translated = thinking.ApplySummaryConfigForModel(translated, to.String(), model, summaryConfig)
+	if to == sdktranslator.FormatGemini {
+		translated = NormalizeGeminiCandidateCount(translated)
+	}
+	return translated
 }
 
 // HasCodexMultiAgentV2NamespaceConflict reports whether the request defines

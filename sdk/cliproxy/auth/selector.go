@@ -362,18 +362,7 @@ func (e *modelCooldownError) Headers() http.Header {
 }
 
 func authPriority(auth *Auth) int {
-	if auth == nil || auth.Attributes == nil {
-		return 0
-	}
-	raw := strings.TrimSpace(auth.Attributes["priority"])
-	if raw == "" {
-		return 0
-	}
-	parsed, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0
-	}
-	return parsed
+	return auth.EffectivePriority()
 }
 
 func authWeight(auth *Auth) int64 {
@@ -824,7 +813,7 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	if auth == nil {
 		return true, blockReasonOther, time.Time{}
 	}
-	if auth.Disabled || auth.Status == StatusDisabled {
+	if auth.EffectiveDisabled() {
 		return true, blockReasonDisabled, time.Time{}
 	}
 	if hasUnauthorizedAuthFailure(auth) {

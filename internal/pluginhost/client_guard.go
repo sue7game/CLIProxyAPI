@@ -83,25 +83,37 @@ func (c *guardedPluginClient) Shutdown() {
 	c.ShutdownContext(context.Background())
 }
 
+// ShutdownAsync detaches the client immediately and completes physical cleanup
+// after active calls drain.
+func (c *guardedPluginClient) ShutdownAsync() {
+	c.beginShutdown()
+}
+
 // ShutdownContext detaches the client immediately and waits for active calls only
 // until ctx is canceled. Detached cleanup continues asynchronously when needed.
 func (c *guardedPluginClient) ShutdownContext(ctx context.Context) {
-	if c == nil {
-		return
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	done := c.beginShutdown()
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+}
 
+func (c *guardedPluginClient) beginShutdown() <-chan struct{} {
+	if c == nil {
+		return nil
+	}
 	c.mu.Lock()
 	if c.closed {
 		done := c.shutdownDone
 		c.mu.Unlock()
-		select {
-		case <-done:
-		case <-ctx.Done():
-		}
-		return
+		return done
 	}
 	c.closed = true
 	inner := c.inner
@@ -120,9 +132,5 @@ func (c *guardedPluginClient) ShutdownContext(ctx context.Context) {
 		}
 		close(done)
 	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
+	return done
 }

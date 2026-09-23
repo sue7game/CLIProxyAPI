@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -88,6 +89,41 @@ func TestGeminiExecutorExecuteCapsMaxOutputTokensBeforeUpstream(t *testing.T) {
 	}
 	if upstreamMaxOutputTokens != 65536 {
 		t.Fatalf("upstream maxOutputTokens = %d, want 65536", upstreamMaxOutputTokens)
+	}
+}
+
+func TestGeminiExecutorClampsCandidateCountBeforeUpstream(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		input int
+		want  int64
+	}{
+		{name: "below minimum", input: 0, want: 1},
+		{name: "multiple candidates disabled", input: 2, want: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var upstreamCandidateCount int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, errRead := io.ReadAll(r.Body)
+				if errRead != nil {
+					t.Fatalf("read request body: %v", errRead)
+				}
+				upstreamCandidateCount = gjson.GetBytes(body, "generationConfig.candidateCount").Int()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`))
+			}))
+			defer server.Close()
+
+			exec := NewGeminiExecutor(&config.Config{})
+			auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL}}
+			req := cliproxyexecutor.Request{Model: "gemini-3.1-flash-lite", Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"candidateCount":` + strconv.Itoa(tt.input) + `}}`)}
+			if _, errExecute := exec.Execute(context.Background(), auth, req, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini}); errExecute != nil {
+				t.Fatalf("Execute() error = %v", errExecute)
+			}
+			if upstreamCandidateCount != tt.want {
+				t.Fatalf("upstream candidate count = %d, want %d", upstreamCandidateCount, tt.want)
+			}
+		})
 	}
 }
 

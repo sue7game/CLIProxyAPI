@@ -19,11 +19,12 @@ type runtimeConfig struct {
 }
 
 type runtimeItemConfig struct {
-	ID         string
-	Enabled    bool
-	Priority   int
-	Version    string
-	ConfigYAML []byte
+	ID                 string
+	Enabled            bool
+	Priority           int
+	Version            string
+	ConfigYAML         []byte
+	DisabledConfigYAML []byte
 }
 
 func runtimeConfigFromConfig(cfg *config.Config) (runtimeConfig, error) {
@@ -36,14 +37,13 @@ func runtimeConfigFromConfig(cfg *config.Config) (runtimeConfig, error) {
 	}
 
 	out.Enabled = cfg.Plugins.Enabled
-	if !out.Enabled {
-		return out, nil
+	if out.Enabled {
+		pluginsDir, errResolvePluginsDir := config.ResolvePluginsDir(cfg.Plugins.Dir)
+		if errResolvePluginsDir != nil {
+			return runtimeConfig{}, errResolvePluginsDir
+		}
+		out.Dir = pluginsDir
 	}
-	pluginsDir, errResolvePluginsDir := config.ResolvePluginsDir(cfg.Plugins.Dir)
-	if errResolvePluginsDir != nil {
-		return runtimeConfig{}, errResolvePluginsDir
-	}
-	out.Dir = pluginsDir
 
 	ids := make([]string, 0, len(cfg.Plugins.Configs))
 	for id := range cfg.Plugins.Configs {
@@ -53,17 +53,19 @@ func runtimeConfigFromConfig(cfg *config.Config) (runtimeConfig, error) {
 
 	for _, id := range ids {
 		item := cfg.Plugins.Configs[id]
-		enabled := false
+		itemEnabled := false
 		if item.Enabled != nil {
-			enabled = *item.Enabled
+			itemEnabled = *item.Enabled
 		}
+		enabled := out.Enabled && itemEnabled
 
 		out.Items[id] = runtimeItemConfig{
-			ID:         id,
-			Enabled:    enabled,
-			Priority:   item.Priority,
-			Version:    pluginConfigDesiredVersion(item),
-			ConfigYAML: runtimeConfigYAML(item, enabled),
+			ID:                 id,
+			Enabled:            enabled,
+			Priority:           item.Priority,
+			Version:            pluginConfigDesiredVersion(item),
+			ConfigYAML:         runtimeConfigYAML(item, enabled),
+			DisabledConfigYAML: runtimeConfigYAML(item, false),
 		}
 	}
 	return out, nil
@@ -71,10 +73,11 @@ func runtimeConfigFromConfig(cfg *config.Config) (runtimeConfig, error) {
 
 func defaultRuntimeItemConfig(id string) runtimeItemConfig {
 	return runtimeItemConfig{
-		ID:         id,
-		Enabled:    false,
-		Priority:   0,
-		ConfigYAML: append([]byte(nil), defaultRuntimeConfigYAML...),
+		ID:                 id,
+		Enabled:            false,
+		Priority:           0,
+		ConfigYAML:         append([]byte(nil), defaultRuntimeConfigYAML...),
+		DisabledConfigYAML: append([]byte(nil), defaultRuntimeConfigYAML...),
 	}
 }
 
@@ -162,8 +165,8 @@ func normalizedConfigNode(item config.PluginInstanceConfig, enabled bool) *yaml.
 	if node.Kind != yaml.MappingNode {
 		return node
 	}
-	ensureMappingScalar(node, "enabled", boolYAMLValue(enabled), "!!bool")
-	ensureMappingScalar(node, "priority", intYAMLValue(item.Priority), "!!int")
+	setMappingScalar(node, "enabled", boolYAMLValue(enabled), "!!bool")
+	setMappingScalar(node, "priority", intYAMLValue(item.Priority), "!!int")
 	return node
 }
 
@@ -180,12 +183,13 @@ func defaultRuntimeConfigNode(enabled bool, priority int) *yaml.Node {
 	}
 }
 
-func ensureMappingScalar(node *yaml.Node, key, value, tag string) {
+func setMappingScalar(node *yaml.Node, key, value, tag string) {
 	if node == nil || node.Kind != yaml.MappingNode {
 		return
 	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		if node.Content[i] != nil && node.Content[i].Value == key {
+			node.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: value}
 			return
 		}
 	}

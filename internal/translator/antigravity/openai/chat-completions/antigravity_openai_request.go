@@ -325,6 +325,9 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		if len(systemParts) > 0 {
 			out, _ = sjson.SetRawBytes(out, "request.systemInstruction", antigravityOpenAIContent("user", systemParts))
 		}
+		if len(contentItems) > 0 && gjson.GetBytes(contentItems[len(contentItems)-1], "role").String() == "model" {
+			contentItems = contentItems[:len(contentItems)-1]
+		}
 		out = translatorcommon.SetRawArrayItems(out, "request.contents", contentItems)
 	}
 

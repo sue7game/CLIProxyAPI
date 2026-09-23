@@ -607,8 +607,11 @@ func (a rpcThinkingApplier) ApplyThinking(ctx context.Context, req pluginapi.Thi
 }
 
 func (a *rpcPluginAdapter) HandleUsage(ctx context.Context, record pluginapi.UsageRecord) {
+	if a == nil {
+		return
+	}
 	if _, errCall := callPlugin[rpcEmptyResponse](ctx, a.client, pluginabi.MethodUsageHandle, record); errCall != nil {
-		log.Debugf("pluginhost: usage.handle to %s failed: %v", a.id, errCall)
+		log.WithField("plugin_id", strings.TrimSpace(a.id)).WithError(errCall).Warn("pluginhost: usage plugin call failed")
 	}
 }
 

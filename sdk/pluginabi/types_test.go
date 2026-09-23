@@ -100,6 +100,12 @@ func TestMethodNamesAreStable(t *testing.T) {
 	if MethodHostAffinityLookup != "host.affinity.lookup" {
 		t.Fatalf("MethodHostAffinityLookup = %q", MethodHostAffinityLookup)
 	}
+	if MethodHostAuthSetRuntimeOverride != "host.auth.set_runtime_override" {
+		t.Fatalf("MethodHostAuthSetRuntimeOverride = %q", MethodHostAuthSetRuntimeOverride)
+	}
+	if MethodHostAuthRequest != "host.auth.request" {
+		t.Fatalf("MethodHostAuthRequest = %q", MethodHostAuthRequest)
+	}
 	if MethodExecutorExecuteStream != "executor.execute_stream" {
 		t.Fatalf("MethodExecutorExecuteStream = %q", MethodExecutorExecuteStream)
 	}

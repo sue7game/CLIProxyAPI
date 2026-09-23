@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Antigravity Guard</title>
+  <link rel="stylesheet" href="./assets/styles.css">
+  <link rel="stylesheet" href="./assets/settings.css">
+  <link rel="stylesheet" href="./assets/credentials.css">
+</head>
+<body>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
+  <main class="shell">
+    <header class="topbar">
+      <div class="identity">
+        <span class="mark" aria-hidden="true">AG</span>
+        <div>
+          <p class="eyebrow">ANTIGRAVITY ROUTING CONTROL</p>
+          <h1>凭证守卫</h1>
+        </div>
+      </div>
+      <div class="connection" id="connectionState" data-state="idle">
+        <span class="connection-dot" aria-hidden="true"></span>
+        <span id="connectionText">等待管理密钥</span>
+      </div>
+    </header>
+
+    <section class="key-panel" id="keyPanel">
+      <div>
+        <p class="section-kicker">安全连接</p>
+        <h2>连接 Management API</h2>
+        <p>密钥仅保存在当前标签页的 sessionStorage，不会写入插件或凭证文件。</p>
+      </div>
+      <form id="keyForm" class="key-form">
+        <label for="managementKey">Management Key</label>
+        <div class="input-action">
+          <input id="managementKey" name="managementKey" type="password" autocomplete="current-password" required>
+          <button type="submit" class="button primary">连接</button>
+        </div>
+      </form>
+    </section>
+
+    <div id="dashboard" class="dashboard" hidden>
+      <section class="summary-grid" aria-label="运行摘要">
+        <article class="metric accent-cyan">
+          <span>Antigravity 凭证</span>
+          <strong id="metricCredentials">0</strong>
+          <small id="metricRecent">最近使用 0</small>
+        </article>
+        <article class="metric accent-amber">
+          <span>冷却 / 隔离中</span>
+          <strong id="metricCooling">0</strong>
+          <small id="metric429">本进程累计 0 次</small>
+        </article>
+        <article class="metric accent-red">
+          <span>周限已空</span>
+          <strong id="metricWeekly">0</strong>
+          <small>仅显示已确认耗尽</small>
+        </article>
+        <article class="metric accent-green">
+          <span>代理分组</span>
+          <strong id="metricProxies">0</strong>
+          <small id="metricUpdated">尚未刷新</small>
+        </article>
+      </section>
+
+      <section class="guard-panel" aria-labelledby="guardTitle">
+        <div class="guard-heading">
+          <div>
+            <div class="kicker-line">
+              <p class="section-kicker">429 POLICY</p>
+              <span class="runtime-chip">仅当前进程</span>
+            </div>
+            <h2 id="guardTitle">自动守卫策略</h2>
+            <p>控制 Antigravity 凭证触发连续 429 后的临时路由动作，以及周限耗尽时的隔离优先级。</p>
+          </div>
+          <label class="switch-control" for="auto429Enabled">
+            <span>
+              <strong>自动守卫</strong>
+              <small>启用时识别 429；关闭时立即尝试恢复，失败按 restore_retry 重试</small>
+            </span>
+            <input id="auto429Enabled" type="checkbox" role="switch">
+            <span class="switch-track" aria-hidden="true"><span></span></span>
+          </label>
+        </div>
+
+        <form id="guardSettingsForm" class="guard-form" novalidate>
+          <fieldset id="guardActionGroup" class="guard-action-group">
+            <legend>429 后执行</legend>
+            <div class="strategy-options">
+              <label class="strategy-option">
+                <input type="radio" name="guardAction" value="disable">
+                <span>
+                  <strong>临时禁用凭证</strong>
+                  <small>冷却期间不再参与路由，到期自动恢复。</small>
+                </span>
+              </label>
+              <label class="strategy-option">
+                <input type="radio" name="guardAction" value="priority">
+                <span>
+                  <strong>临时降低优先级</strong>
+                  <small>凭证仍可参与路由，但会使用下方指定优先级。</small>
+                  <small class="strategy-risk">仍可能继续请求：没有更高优先级凭证时，它仍会被选中。</small>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+
+          <div class="guard-value-settings">
+            <div class="guard-number-setting threshold-setting" id="thresholdSetting">
+              <label for="consecutive429Threshold">连续 429 触发次数</label>
+              <input id="consecutive429Threshold" type="number" min="1" step="1" inputmode="numeric" aria-describedby="thresholdHelp">
+              <small id="thresholdHelp">同一凭证连续达到此次数后才执行策略；非 429 请求会重新计数。</small>
+            </div>
+
+            <div class="guard-number-setting priority-setting" id="prioritySetting">
+              <label for="temporaryPriority">指定优先级</label>
+              <input id="temporaryPriority" type="number" step="1" inputmode="numeric" aria-describedby="priorityHelp">
+              <small id="priorityHelp">普通 429 选择“临时降低优先级”时使用；Gemini 周限已空时，无论所选策略都会移到此优先级并禁用。</small>
+            </div>
+          </div>
+
+          <div class="guard-submit">
+            <p class="runtime-notice">
+              设置只保存在当前 CLIProxyAPI 进程中；进程重启或插件配置实际变化后，重新读取 <code>config.yaml</code>。
+              只影响后续新触发的 429；已冷却或隔离的凭证保持原动作，直到到期或手动解除。
+              Gemini 周限已空时会移到指定优先级并禁用，刷新倒计时仅用于提示，到时仍需手动解除隔离。
+            </p>
+            <div class="guard-submit-action">
+              <p id="guardSettingsFeedback" class="inline-feedback" role="status" aria-live="polite"></p>
+              <button id="applyGuardSettings" class="button primary" type="submit">应用策略</button>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <section class="bulk-panel" aria-labelledby="bulkTitle">
+        <div>
+          <p class="section-kicker">批量操作</p>
+          <h2 id="bulkTitle"><span id="selectedCount">0</span> 个凭证已选择</h2>
+          <p class="runtime-note">代理仅修改当前进程；批量额度按 3 秒间隔逐个获取，不会并发请求。</p>
+        </div>
+        <div class="bulk-controls">
+          <input id="proxyInput" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="http://user:pass@host:port 或 socks5://..." aria-label="代理地址">
+          <button id="setProxyButton" class="button primary" type="button">应用代理</button>
+          <button id="directButton" class="button secondary" type="button">强制直连</button>
+          <button id="clearProxyButton" class="button ghost" type="button">恢复配置</button>
+          <button id="bulkQuotaButton" class="button secondary" type="button">获取选中额度</button>
+          <span id="bulkQuotaProgress" class="bulk-progress" role="status" aria-live="polite"></span>
+        </div>
+      </section>
+
+      <section class="credentials-section" aria-labelledby="credentialsTitle">
+        <div class="section-heading credentials-heading">
+          <div>
+            <p class="section-kicker">CREDENTIALS</p>
+            <h2 id="credentialsTitle">凭证明细</h2>
+          </div>
+          <p id="resultCount" class="result-count">0 个结果</p>
+        </div>
+        <div class="credentials-toolbar">
+          <div class="search-field">
+            <label for="searchInput">筛选凭证</label>
+            <input id="searchInput" type="search" placeholder="名称、邮箱、模型、代理别名或 Auth Index">
+          </div>
+          <div class="select-field">
+            <label for="proxyFilter">有效代理</label>
+            <select id="proxyFilter"><option value="all">全部代理</option></select>
+          </div>
+          <button id="refreshButton" class="button secondary" type="button">刷新状态</button>
+          <div class="credential-status-row">
+            <div id="credentialStatusFilters" class="status-filter-tabs" role="group" aria-label="凭证状态">
+              <button type="button" class="status-filter-button" data-status="all" aria-pressed="true">全部</button>
+              <button type="button" class="status-filter-button" data-status="active" aria-pressed="false">正在使用</button>
+              <button type="button" class="status-filter-button" data-status="available" aria-pressed="false">可用</button>
+              <button type="button" class="status-filter-button" data-status="cooling" aria-pressed="false">冷却等待恢复中</button>
+              <button type="button" class="status-filter-button" data-status="isolated" aria-pressed="false">隔离中</button>
+              <button type="button" class="status-filter-button" data-status="disabled" aria-pressed="false">禁用中</button>
+            </div>
+            <span class="auto-refresh-note">信息每 30 秒自动刷新</span>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="credential-table">
+            <thead>
+              <tr>
+                <th class="check-cell"><input id="selectVisible" type="checkbox" aria-label="选择当前筛选结果"></th>
+                <th>凭证</th>
+                <th>路由</th>
+                <th>429 状态</th>
+                <th>周限</th>
+                <th>代理</th>
+                <th>进程统计</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="credentialsBody"></tbody>
+          </table>
+          <div id="emptyState" class="empty-state" hidden>
+            <strong>没有符合条件的凭证</strong>
+            <span>调整筛选条件或刷新状态。</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="credentials-section codex-section" aria-labelledby="codexCredentialsTitle">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">CODEX CREDENTIALS</p>
+            <h2 id="codexCredentialsTitle">Codex 凭证状态</h2>
+          </div>
+          <p>连续两次 usage_limit 或 401 后自动禁用；限额刷新倒计时仅在已获取限额信息时显示。</p>
+        </div>
+        <div class="table-wrap">
+          <table class="credential-table">
+            <thead><tr><th>凭证</th><th>路由</th><th>Codex 状态</th><th>额度</th><th>冷却</th><th>操作</th></tr></thead>
+            <tbody id="codexCredentialsBody"></tbody>
+          </table>
+          <div class="empty-state" id="codexEmptyState"><strong>暂无 Codex 凭证</strong></div>
+        </div>
+      </section>
+
+      <section class="proxy-section" aria-labelledby="proxyTitle">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">ROUTE MAP</p>
+            <h2 id="proxyTitle">代理使用分布</h2>
+          </div>
+          <p>账号密码已脱敏；代理别名仅在当前进程内保留。</p>
+        </div>
+        <div class="proxy-grid" id="proxyGroups"></div>
+      </section>
+    </div>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="./assets/api.js" defer></script>
+  <script src="./assets/format.js" defer></script>
+  <script src="./assets/search.js" defer></script>
+  <script src="./assets/proxy.js" defer></script>
+  <script src="./assets/bulk-quota.js" defer></script>
+  <script src="./assets/settings.js" defer></script>
+  <script src="./assets/codex.js" defer></script>
+  <script src="./assets/app.js" defer></script>
+  <script src="./assets/bulk-quota-init.js" defer></script>
+</body>
+</html>

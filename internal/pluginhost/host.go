@@ -82,6 +82,7 @@ type Host struct {
 	commandLineHits        map[string]struct{}
 	managementRoutes       map[string]managementRouteRecord
 	resourceRoutes         map[string]resourceRouteRecord
+	deactivationPending    map[string]pluginDeactivationTarget
 	streams                *streamBridge
 	httpStreams            *hostHTTPStreamBridge
 	modelStreams           *modelStreamBridge
@@ -112,6 +113,7 @@ func New() *Host {
 		commandLineHits:        make(map[string]struct{}),
 		managementRoutes:       make(map[string]managementRouteRecord),
 		resourceRoutes:         make(map[string]resourceRouteRecord),
+		deactivationPending:    make(map[string]pluginDeactivationTarget),
 		streams:                newStreamBridge(),
 		httpStreams:            newHostHTTPStreamBridge(),
 		modelStreams:           newModelStreamBridge(),
@@ -216,6 +218,7 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 	h.mu.Lock()
 	h.runtimeConfig = cfg
 	h.mu.Unlock()
+	deactivationTargets := h.activePluginDeactivationTargets(rc.Items)
 
 	if !rc.Enabled {
 		h.mu.Lock()
@@ -225,6 +228,7 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 		h.snapshot.Store(emptySnapshot())
 		h.mu.Unlock()
 		h.refreshThinkingProviders(nil)
+		h.deactivatePlugins(ctx, deactivationTargets)
 		return
 	}
 
@@ -239,12 +243,14 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 		h.snapshot.Store(emptySnapshot())
 		h.mu.Unlock()
 		h.refreshThinkingProviders(nil)
+		h.deactivatePlugins(ctx, deactivationTargets)
 		return
 	}
 	files = h.withLoadedPluginFallbacks(files, rc.Items, desiredVersions)
 
 	records := make([]capabilityRecord, 0, len(files))
 	loadedFiles := make([]pluginFile, 0, len(files))
+	retiredClients := make([]pluginClient, 0)
 	hotReloadLogs := make([]log.Fields, 0)
 	for _, file := range files {
 		item, ok := rc.Items[file.ID]
@@ -341,6 +347,9 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 			if replaced != nil {
 				hotReloadFields = pluginHotReloadLogFields(file.ID, file.Version, file.Path, replaced.version, replaced.path)
 				h.retireLoadedPluginLocked(replaced)
+				retiredClients = append(retiredClients, replaced.client)
+				delete(deactivationTargets, file.ID)
+				delete(h.deactivationPending, file.ID)
 				delete(h.fused, file.ID)
 				h.removePluginRuntimeStateLocked(file.ID)
 			}
@@ -385,6 +394,7 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 			meta:     plugin.Metadata,
 			plugin:   plugin,
 		})
+		h.cancelPluginDeactivation(deactivationTargets, file.ID)
 		loadedFiles = append(loadedFiles, file)
 	}
 
@@ -398,6 +408,11 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 	h.snapshot.Store(&Snapshot{enabled: true, records: records, quotaSupportedProviders: make(map[string][]string)})
 	h.mu.Unlock()
 	h.refreshThinkingProviders(records)
+	// Retired clients must remain callable until the replacement snapshot is active.
+	for _, client := range retiredClients {
+		shutdownPluginClientAsync(client)
+	}
+	h.deactivatePlugins(ctx, deactivationTargets)
 	for _, fields := range hotReloadLogs {
 		log.WithFields(fields).Info("pluginhost: plugin hot reloaded")
 	}
@@ -619,6 +634,7 @@ func (h *Host) UnloadPluginContext(ctx context.Context, id string) bool {
 	}
 	delete(h.loaded, id)
 	delete(h.retired, id)
+	delete(h.deactivationPending, id)
 	delete(h.fused, id)
 	delete(h.activePluginVersions, id)
 	delete(h.activePluginPaths, id)
@@ -699,6 +715,7 @@ func (h *Host) ShutdownAllContext(ctx context.Context) {
 	h.commandLineHits = make(map[string]struct{})
 	h.managementRoutes = make(map[string]managementRouteRecord)
 	h.resourceRoutes = make(map[string]resourceRouteRecord)
+	h.deactivationPending = make(map[string]pluginDeactivationTarget)
 	h.pluginFileVersions = make(map[string]string)
 	h.activePluginVersions = make(map[string]string)
 	h.activePluginPaths = make(map[string]string)
@@ -749,6 +766,17 @@ func shutdownPluginClient(ctx context.Context, client pluginClient) {
 		return
 	}
 	client.Shutdown()
+}
+
+func shutdownPluginClientAsync(client pluginClient) {
+	if client == nil {
+		return
+	}
+	if guarded, ok := client.(*guardedPluginClient); ok {
+		guarded.ShutdownAsync()
+		return
+	}
+	go client.Shutdown()
 }
 
 func cleanPluginPath(path string) string {
@@ -917,6 +945,9 @@ func (h *Host) rollbackReplacement(lp *loadedPlugin, item runtimeItemConfig) (ca
 	}
 
 	plugin, okCall := h.callRegister(context.Background(), lp, item)
+	h.mu.Lock()
+	delete(h.deactivationPending, lp.id)
+	h.mu.Unlock()
 	if okCall {
 		h.mu.Lock()
 		delete(h.fused, lp.id)
@@ -928,17 +959,17 @@ func (h *Host) rollbackReplacement(lp *loadedPlugin, item runtimeItemConfig) (ca
 		return capabilityRecord{}, pluginFile{}, false
 	}
 	return capabilityRecord{
-		id:       lp.id,
-		path:     lp.path,
-		version:  lp.version,
-		priority: item.Priority,
-		meta:     plugin.Metadata,
-		plugin:   plugin,
-	}, pluginFile{
-		ID:      lp.id,
-		Path:    lp.path,
-		Version: lp.version,
-	}, true
+			id:       lp.id,
+			path:     lp.path,
+			version:  lp.version,
+			priority: item.Priority,
+			meta:     plugin.Metadata,
+			plugin:   plugin,
+		}, pluginFile{
+			ID:      lp.id,
+			Path:    lp.path,
+			Version: lp.version,
+		}, true
 }
 
 func (h *Host) callRegister(ctx context.Context, lp *loadedPlugin, item runtimeItemConfig) (pluginapi.Plugin, bool) {

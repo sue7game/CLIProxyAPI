@@ -28,9 +28,10 @@ import (
 )
 
 type hostHTTPClient struct {
-	host     *Host
-	auth     *coreauth.Auth
-	provider string
+	host          *Host
+	auth          *coreauth.Auth
+	provider      string
+	responseToken string
 }
 
 func (h *Host) newHTTPClient(auth *coreauth.Auth, providers ...string) pluginapi.HostHTTPClient {
@@ -39,6 +40,15 @@ func (h *Host) newHTTPClient(auth *coreauth.Auth, providers ...string) pluginapi
 		provider = providers[0]
 	}
 	return &hostHTTPClient{host: h, auth: auth, provider: provider}
+}
+
+func (h *Host) newAuthHTTPClient(auth *coreauth.Auth, provider, responseToken string) pluginapi.HostHTTPClient {
+	return &hostHTTPClient{
+		host:          h,
+		auth:          auth,
+		provider:      provider,
+		responseToken: responseToken,
+	}
 }
 
 func (c *hostHTTPClient) Do(ctx context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
@@ -57,20 +67,23 @@ func (c *hostHTTPClient) Do(ctx context.Context, req pluginapi.HTTPRequest) (plu
 			cleanup()
 		}
 	}()
-	helps.RecordAPIResponseMetadata(ctx, cfg, resp.StatusCode, resp.Header.Clone())
+	result := pluginapi.HTTPResponse{
+		StatusCode: resp.StatusCode,
+		Headers:    cloneHeader(resp.Header),
+	}
+	redactHostAuthToken(&result, c.responseToken)
+	helps.RecordAPIResponseMetadata(ctx, cfg, result.StatusCode, result.Headers)
 	body, errReadAll := io.ReadAll(resp.Body)
-	if len(body) > 0 {
-		helps.AppendAPIResponseChunk(ctx, cfg, body)
+	result.Body = body
+	redactHostAuthToken(&result, c.responseToken)
+	if len(result.Body) > 0 {
+		helps.AppendAPIResponseChunk(ctx, cfg, result.Body)
 	}
 	if errReadAll != nil {
 		helps.RecordAPIResponseError(ctx, cfg, errReadAll)
 		return pluginapi.HTTPResponse{}, fmt.Errorf("read host http response: %w", errReadAll)
 	}
-	return pluginapi.HTTPResponse{
-		StatusCode: resp.StatusCode,
-		Headers:    cloneHeader(resp.Header),
-		Body:       body,
-	}, nil
+	return result, nil
 }
 
 func (c *hostHTTPClient) DoStream(ctx context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPStreamResponse, error) {

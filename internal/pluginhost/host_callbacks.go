@@ -129,6 +129,10 @@ func (h *Host) callFromPlugin(ctx context.Context, method string, request []byte
 		return h.callHostAuthGetRuntime(ctx, request)
 	case pluginabi.MethodHostAuthSave:
 		return h.callHostAuthSave(ctx, request)
+	case pluginabi.MethodHostAuthSetRuntimeOverride:
+		return h.callHostAuthSetRuntimeOverride(ctx, request)
+	case pluginabi.MethodHostAuthRequest:
+		return h.callHostAuthRequest(ctx, request)
 	case pluginabi.MethodHostAffinityLookup:
 		return h.callHostAffinityLookup(ctx, request)
 	default:

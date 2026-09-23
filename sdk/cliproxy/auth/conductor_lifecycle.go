@@ -99,8 +99,16 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	if m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
-	auth.EnsureIndex()
 	m.mu.Lock()
+	if existing := m.auths[auth.ID]; existing != nil {
+		if !auth.indexAssigned && auth.Index == "" {
+			auth.Index = existing.Index
+			auth.indexAssigned = existing.indexAssigned
+		}
+		auth.runtimeOverride = existing.runtimeOverride.Clone()
+		auth.runtimeOverrideRevisions = existing.runtimeOverrideRevisions
+	}
+	auth.EnsureIndex()
 	if m.authEpochs == nil {
 		m.authEpochs = make(map[string]uint64)
 	}
@@ -114,14 +122,13 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	auth.RegistrationEpoch = m.authEpochs[auth.ID]
 	auth.Generation = 1
 	authClone := auth.Clone()
+	m.attachRuntimeAuthOverrideRevisionsLocked(authClone)
 	m.auths[auth.ID] = authClone
 	m.mu.Unlock()
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	}
-	if m.scheduler != nil {
-		m.scheduler.upsertAuth(authClone.Clone())
-	}
+	m.syncSchedulerAuth(auth.ID)
 	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
@@ -209,6 +216,8 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	auth.Success = existing.Success
 	auth.Failed = existing.Failed
 	auth.recentRequests = existing.recentRequests
+	auth.runtimeOverride = existing.runtimeOverride.Clone()
+	auth.runtimeOverrideRevisions = existing.runtimeOverrideRevisions
 	if auth.Generation <= existing.Generation {
 		auth.Generation = existing.Generation + 1
 	} else {
@@ -248,6 +257,7 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
 	auth.EnsureIndex()
+	m.attachRuntimeAuthOverrideRevisionsLocked(auth)
 	// A minted Meta key must reach the configured store before requests can use it.
 	// Keep the epoch check, save and installation together so a concurrent reload
 	// or removal cannot let an obsolete mint overwrite the credential on disk.
@@ -264,9 +274,7 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	}
-	if m.scheduler != nil {
-		m.scheduler.upsertAuth(authClone.Clone())
-	}
+	m.syncSchedulerAuth(auth.ID)
 	m.queueRefreshReschedule(auth.ID)
 	if !persistMetaMint {
 		_ = m.persist(ctx, auth)
@@ -374,11 +382,23 @@ func (m *Manager) Load(ctx context.Context) error {
 		if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 			continue
 		}
-		auth.EnsureIndex()
 		m.authEpochs[auth.ID] = max(m.authEpochs[auth.ID], auth.RegistrationEpoch) + 1
 		auth.RegistrationEpoch = m.authEpochs[auth.ID]
 		auth.Generation = 1
-		m.auths[auth.ID] = auth.Clone()
+		authClone := auth.Clone()
+		authClone.runtimeOverride = RuntimeAuthOverride{}
+		authClone.runtimeOverrideRevisions = RuntimeAuthOverrideRevisions{}
+		if existing := previousAuths[auth.ID]; existing != nil {
+			if !authClone.indexAssigned && authClone.Index == "" {
+				authClone.Index = existing.Index
+				authClone.indexAssigned = existing.indexAssigned
+			}
+			authClone.runtimeOverride = existing.runtimeOverride.Clone()
+			authClone.runtimeOverrideRevisions = existing.runtimeOverrideRevisions
+		}
+		authClone.EnsureIndex()
+		m.attachRuntimeAuthOverrideRevisionsLocked(authClone)
+		m.auths[auth.ID] = authClone
 	}
 
 	type removalTombstone struct {
@@ -440,7 +460,6 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 	if auth.Metadata == nil {
 		return nil
 	}
-
 	lockVal, _ := m.persistLocks.LoadOrStore(auth.ID, &authPersistLock{})
 	pLock, _ := lockVal.(*authPersistLock)
 	if pLock != nil {
@@ -454,13 +473,19 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 		if shouldSkipPersist(ctx) {
 			return nil
 		}
-		_, err := m.store.Save(ctx, auth)
+		persistedAuth := auth.Clone()
+		persistedAuth.runtimeOverride = RuntimeAuthOverride{}
+		persistedAuth.runtimeOverrideRevisions = RuntimeAuthOverrideRevisions{}
+		_, err := m.store.Save(ctx, persistedAuth)
 		return err
 	}
 
 	if shouldSkipPersist(ctx) {
 		return nil
 	}
-	_, err := m.store.Save(ctx, auth)
+	persistedAuth := auth.Clone()
+	persistedAuth.runtimeOverride = RuntimeAuthOverride{}
+	persistedAuth.runtimeOverrideRevisions = RuntimeAuthOverrideRevisions{}
+	_, err := m.store.Save(ctx, persistedAuth)
 	return err
 }

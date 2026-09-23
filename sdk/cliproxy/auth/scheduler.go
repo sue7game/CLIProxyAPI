@@ -704,7 +704,7 @@ func (s *authScheduler) upsertAuthLifecycleLocked(auth *Auth, now time.Time) {
 	}
 
 	providerKey := executorKeyFromAuth(auth)
-	if providerKey == "" || auth.Disabled || auth.Status == StatusDisabled {
+	if providerKey == "" || auth.EffectiveDisabled() {
 		s.removeAuthFromProvidersLocked(authID)
 		return
 	}

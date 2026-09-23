@@ -186,7 +186,7 @@ func writeDirectErrorResponse(c *gin.Context, status int, msg *interfaces.ErrorM
 			c.Writer.Header().Add(key, value)
 		}
 	}
-	body := bytes.Clone(msg.Body)
+	body := AppendErrorMessageHint(status, bytes.Clone(msg.Body))
 	appendAPIResponse(c, body)
 	if !c.Writer.Written() && c.Writer.Header().Get("Content-Type") == "" {
 		c.Writer.Header().Set("Content-Type", "application/json")

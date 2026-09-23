@@ -109,7 +109,33 @@ func (m *Manager) syncScheduler() {
 	if m == nil || m.scheduler == nil {
 		return
 	}
-	m.syncSchedulerFromSnapshot(m.snapshotAuths())
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	auths := make([]*Auth, 0, len(m.auths))
+	for _, auth := range m.auths {
+		if auth != nil {
+			auths = append(auths, auth.Clone())
+		}
+	}
+	m.scheduler.rebuild(auths)
+}
+
+func (m *Manager) syncSchedulerAuth(authID string) {
+	if m == nil || m.scheduler == nil {
+		return
+	}
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	auth := m.auths[authID]
+	if auth == nil {
+		m.scheduler.removeAuth(authID)
+		return
+	}
+	m.scheduler.upsertAuth(auth.Clone())
 }
 
 func (m *Manager) snapshotAuths() []*Auth {
@@ -128,18 +154,7 @@ func (m *Manager) snapshotAuths() []*Auth {
 // because the initial scheduler.upsertAuth during Register/Update runs before
 // registerModelsForAuth and therefore snapshots an empty model set.
 func (m *Manager) RefreshSchedulerEntry(authID string) {
-	if m == nil || m.scheduler == nil || authID == "" {
-		return
-	}
-	m.mu.RLock()
-	auth, ok := m.auths[authID]
-	if !ok || auth == nil {
-		m.mu.RUnlock()
-		return
-	}
-	snapshot := auth.Clone()
-	m.mu.RUnlock()
-	m.scheduler.upsertAuth(snapshot)
+	m.syncSchedulerAuth(authID)
 }
 
 // RefreshSchedulerAll rebuilds scheduler entries for every known auth.
@@ -986,7 +1001,7 @@ func (m *Manager) AvailableProviders() []string {
 	seen := make(map[string]struct{}, len(m.auths))
 	out := make([]string, 0, len(m.auths))
 	for _, auth := range m.auths {
-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+		if auth == nil || auth.EffectiveDisabled() {
 			continue
 		}
 		provider := strings.ToLower(strings.TrimSpace(auth.Provider))
@@ -1017,7 +1032,7 @@ func (m *Manager) HasProviderAuth(provider string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, auth := range m.auths {
-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+		if auth == nil || auth.EffectiveDisabled() {
 			continue
 		}
 		if strings.ToLower(strings.TrimSpace(auth.Provider)) == provider {
@@ -1618,7 +1633,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
-		if candidate == nil || executorKeyFromAuth(candidate) != provider || candidate.Disabled {
+		if candidate == nil || executorKeyFromAuth(candidate) != provider || candidate.EffectiveDisabled() {
 			continue
 		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
@@ -1859,7 +1874,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	if strings.TrimSpace(model) != "" {
 		m.mu.RLock()
 		for _, candidate := range m.auths {
-			if candidate == nil || executorKeyFromAuth(candidate) != provider || candidate.Disabled {
+			if candidate == nil || executorKeyFromAuth(candidate) != provider || candidate.EffectiveDisabled() {
 				continue
 			}
 			if !eligibility.allows(candidate) {
@@ -1941,7 +1956,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
-		if candidate == nil || candidate.Disabled {
+		if candidate == nil || candidate.EffectiveDisabled() {
 			continue
 		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
@@ -2055,7 +2070,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		}
 		m.mu.RLock()
 		for _, candidate := range m.auths {
-			if candidate == nil || candidate.Disabled {
+			if candidate == nil || candidate.EffectiveDisabled() {
 				continue
 			}
 			if _, ok := providerSet[executorKeyFromAuth(candidate)]; !ok {

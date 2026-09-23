@@ -23,8 +23,8 @@ func TestBuildOpenAIResponsesStreamErrorChunk(t *testing.T) {
 	if errorObj["code"] != "internal_server_error" {
 		t.Fatalf("code = %v, want %q", errorObj["code"], "internal_server_error")
 	}
-	if errorObj["message"] != "unexpected EOF" {
-		t.Fatalf("message = %v, want %q", errorObj["message"], "unexpected EOF")
+	if got := errorObj["message"].(string); !strings.Contains(got, "unexpected EOF\n网络错误，请重试") {
+		t.Fatalf("message = %q", got)
 	}
 	if payload["sequence_number"] != float64(0) {
 		t.Fatalf("sequence_number = %v, want %v", payload["sequence_number"], 0)
@@ -51,8 +51,8 @@ func TestBuildOpenAIResponsesStreamErrorChunkExtractsHTTPErrorBody(t *testing.T)
 	if errorObj["code"] != "internal_server_error" {
 		t.Fatalf("code = %v, want %q", errorObj["code"], "internal_server_error")
 	}
-	if errorObj["message"] != "oops" {
-		t.Fatalf("message = %v, want %q", errorObj["message"], "oops")
+	if got := errorObj["message"].(string); !strings.Contains(got, "oops\n网络错误，请重试") {
+		t.Fatalf("message = %q", got)
 	}
 	if errorObj["type"] != "server_error" {
 		t.Fatalf("error.type = %v, want %q", errorObj["type"], "server_error")
@@ -82,7 +82,7 @@ func TestBuildOpenAIResponsesStreamErrorChunkPreservesNestedError(t *testing.T) 
 	if payload.Error["code"] != "cyber_policy" {
 		t.Fatalf("error.code = %v, want cyber_policy", payload.Error["code"])
 	}
-	if payload.Error["message"] != "This content was flagged for possible cybersecurity risk." {
+	if got := payload.Error["message"].(string); !strings.Contains(got, "This content was flagged for possible cybersecurity risk.\n请求格式、参数或上下文不符合要求，或请求内容包含敏感信息") {
 		t.Fatalf("error.message = %v", payload.Error["message"])
 	}
 	if param, exists := payload.Error["param"]; !exists || param != nil {
@@ -183,8 +183,8 @@ func TestBuildOpenAIResponsesStreamFailedChunkPreservesNestedError(t *testing.T)
 	if payload.Response.Error.Code != "cyber_policy" {
 		t.Fatalf("response.error.code = %q, want %q", payload.Response.Error.Code, "cyber_policy")
 	}
-	if payload.Response.Error.Message != "blocked" {
-		t.Fatalf("response.error.message = %q, want %q", payload.Response.Error.Message, "blocked")
+	if !strings.Contains(payload.Response.Error.Message, "blocked\n请求格式、参数或上下文不符合要求，或请求内容包含敏感信息") {
+		t.Fatalf("response.error.message = %q", payload.Response.Error.Message)
 	}
 }
 

@@ -68,3 +68,50 @@ func TestGuardedPluginClientShutdownContextDetachesBlockedCall(t *testing.T) {
 		t.Fatalf("shutdown calls after active call exits = %d, want 1", got)
 	}
 }
+
+func TestGuardedPluginClientShutdownAsyncDetachesWithoutWaiting(t *testing.T) {
+	inner := &blockingGuardPluginClient{started: make(chan struct{}), release: make(chan struct{})}
+	guarded := newGuardedPluginClient(inner)
+
+	callDone := make(chan struct{})
+	go func() {
+		_, _ = guarded.Call(context.Background(), "blocked", nil)
+		close(callDone)
+	}()
+	select {
+	case <-inner.started:
+	case <-time.After(time.Second):
+		t.Fatal("guarded call did not start")
+	}
+
+	shutdownReturned := make(chan struct{})
+	go func() {
+		guarded.ShutdownAsync()
+		close(shutdownReturned)
+	}()
+	select {
+	case <-shutdownReturned:
+	case <-time.After(time.Second):
+		t.Fatal("asynchronous guarded shutdown waited for the active call")
+	}
+	if _, errCall := guarded.Call(context.Background(), "detached", nil); errCall == nil {
+		t.Fatal("detached guarded client accepted a new call")
+	}
+	if got := inner.shutdown.Load(); got != 0 {
+		t.Fatalf("shutdown calls before active call exits = %d, want 0", got)
+	}
+
+	close(inner.release)
+	select {
+	case <-callDone:
+	case <-time.After(time.Second):
+		t.Fatal("guarded call did not exit")
+	}
+	deadline := time.Now().Add(time.Second)
+	for inner.shutdown.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := inner.shutdown.Load(); got != 1 {
+		t.Fatalf("shutdown calls after active call exits = %d, want 1", got)
+	}
+}

@@ -100,7 +100,7 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 		SequenceNumber: sequenceNumber,
 	})
 	if errMarshal == nil {
-		return data
+		return AppendErrorMessageHint(status, data)
 	}
 
 	// Extremely defensive fallback.
@@ -116,7 +116,7 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 		SequenceNumber: sequenceNumber,
 	})
 	if len(data) > 0 {
-		return data
+		return AppendErrorMessageHint(status, data)
 	}
 	return []byte(`{"type":"error","error":{"type":"server_error","code":"internal_server_error","message":"internal error","param":null},"sequence_number":0}`)
 }
@@ -206,7 +206,7 @@ func BuildOpenAIResponsesStreamFailedChunk(status int, errText string, sequenceN
 		},
 	})
 	if errMarshal == nil {
-		return data
+		return AppendErrorMessageHint(status, data)
 	}
 
 	return []byte(`{"type":"response.failed","sequence_number":0,"response":{"status":"failed","error":{"type":"server_error","code":"internal_server_error","message":"internal error"}}}`)

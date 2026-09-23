@@ -698,6 +698,10 @@ type HostAuthFileEntry struct {
 	StatusMessage string `json:"status_message,omitempty"`
 	// Disabled reports whether the credential is disabled.
 	Disabled bool `json:"disabled,omitempty"`
+	// ConfiguredDisabled reports whether persisted configuration disables the credential.
+	ConfiguredDisabled bool `json:"configured_disabled,omitempty"`
+	// EffectiveDisabled reports whether configuration or runtime override disables it.
+	EffectiveDisabled bool `json:"effective_disabled,omitempty"`
 	// Unavailable reports whether the credential is currently unavailable.
 	Unavailable bool `json:"unavailable,omitempty"`
 	// RuntimeOnly reports whether the credential has no backing auth file.
@@ -727,7 +731,13 @@ type HostAuthFileEntry struct {
 	// Account is the credential account identifier when available.
 	Account string `json:"account,omitempty"`
 	// Priority is the credential routing priority when available.
-	Priority int `json:"priority,omitempty"`
+	Priority                 int                              `json:"priority,omitempty"`
+	ConfiguredPriority       int                              `json:"configured_priority,omitempty"`
+	EffectivePriority        int                              `json:"effective_priority,omitempty"`
+	ConfiguredProxyURL       string                           `json:"configured_proxy_url,omitempty"`
+	EffectiveProxyURL        string                           `json:"effective_proxy_url,omitempty"`
+	RuntimeOverride          *HostAuthRuntimeOverride         `json:"runtime_override,omitempty"`
+	RuntimeOverrideRevisions HostAuthRuntimeOverrideRevisions `json:"runtime_override_revisions"`
 	// Note is the credential note when available.
 	Note string `json:"note,omitempty"`
 	// BaseURL is the upstream base URL configured for the credential when available.
@@ -780,6 +790,62 @@ type HostAuthSaveResponse struct {
 	Name string `json:"name"`
 	// Path is the saved auth file path.
 	Path string `json:"path"`
+}
+
+// HostAuthRuntimeOverride contains routing-only changes for the current host process.
+type HostAuthRuntimeOverride struct {
+	Disabled *bool   `json:"disabled,omitempty"`
+	Priority *int    `json:"priority,omitempty"`
+	ProxyURL *string `json:"proxy_url,omitempty"`
+}
+
+// HostAuthRuntimeOverrideRevisions contains independent fencing revisions.
+type HostAuthRuntimeOverrideRevisions struct {
+	Disabled uint64 `json:"disabled"`
+	Priority uint64 `json:"priority"`
+	ProxyURL uint64 `json:"proxy_url"`
+}
+
+type HostAuthRuntimeOverrideField string
+
+const (
+	HostAuthRuntimeOverrideDisabled HostAuthRuntimeOverrideField = "disabled"
+	HostAuthRuntimeOverridePriority HostAuthRuntimeOverrideField = "priority"
+	HostAuthRuntimeOverrideProxyURL HostAuthRuntimeOverrideField = "proxy_url"
+)
+
+type HostAuthSetRuntimeOverrideRequest struct {
+	AuthIndex       string                            `json:"auth_index"`
+	Disabled        *bool                             `json:"disabled,omitempty"`
+	Priority        *int                              `json:"priority,omitempty"`
+	ProxyURL        *string                           `json:"proxy_url,omitempty"`
+	Clear           []HostAuthRuntimeOverrideField    `json:"clear,omitempty"`
+	IfRevision      *uint64                           `json:"if_revision,omitempty"`
+	IfRevisionField HostAuthRuntimeOverrideField      `json:"if_revision_field,omitempty"`
+	IfRevisions     *HostAuthRuntimeOverrideRevisions `json:"if_revisions,omitempty"`
+}
+
+type HostAuthSetRuntimeOverrideResponse struct {
+	Applied         bool                             `json:"applied"`
+	Revision        uint64                           `json:"revision"`
+	Revisions       HostAuthRuntimeOverrideRevisions `json:"revisions"`
+	Auth            HostAuthFileEntry                `json:"auth"`
+	RuntimeOverride HostAuthRuntimeOverride          `json:"runtime_override"`
+}
+
+type HostAuthRequest struct {
+	AuthIndex      string      `json:"auth_index"`
+	HostCallbackID string      `json:"host_callback_id,omitempty"`
+	Method         string      `json:"method,omitempty"`
+	URL            string      `json:"url"`
+	Headers        http.Header `json:"headers,omitempty"`
+	Body           []byte      `json:"body,omitempty"`
+}
+
+type HostAuthRequestResponse struct {
+	StatusCode int         `json:"status_code"`
+	Headers    http.Header `json:"headers,omitempty"`
+	Body       []byte      `json:"body,omitempty"`
 }
 
 // Host affinity lookup status outcomes.
