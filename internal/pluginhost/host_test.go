@@ -716,6 +716,10 @@ func TestHostApplyConfigLogsHotReloadActiveAndRetiredVersions(t *testing.T) {
 		},
 	})
 	paths["1.0.3"] = writeVersionedPluginFile(t, pluginsDir, "alpha", "1.0.3")
+	// Distinct library versions have independent client lifetimes during async retirement.
+	loader.lookups["alpha"] = newTestSymbolLookup(&testPlugin{
+		registerResult: validTestPlugin("alpha"),
+	})
 	h.ApplyConfig(context.Background(), &config.Config{
 		Plugins: config.PluginsConfig{
 			Enabled: true,
@@ -1244,6 +1248,10 @@ func TestHostApplyConfigKeepsLoadedVersionWhenPinnedVersionMissing(t *testing.T)
 	}
 
 	paths["1.0.5"] = writeVersionedPluginFile(t, pluginsDir, "alpha", "1.0.5")
+	// Keep the replacement independent from the asynchronously retired client.
+	loader.lookups["alpha"] = newTestSymbolLookup(&testPlugin{
+		registerResult: validTestPlugin("alpha"),
+	})
 	h.ApplyConfig(context.Background(), &config.Config{
 		Plugins: config.PluginsConfig{
 			Enabled: true,
