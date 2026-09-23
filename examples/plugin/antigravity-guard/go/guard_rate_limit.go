@@ -97,6 +97,10 @@ func (g *guard) handleCodexUsage(record pluginapi.UsageRecord) {
 func (g *guard) applyCodexDisable(authIndex, trigger string, until time.Time, retrySource string, manual bool) {
 	g.operations.Lock()
 	defer g.operations.Unlock()
+	cfg := g.config()
+	if !cfg.Enabled || (!manual && !cfg.Auto429Enabled) {
+		return
+	}
 	if manual {
 		generation, shouldApply := g.store.beginManualDisable(authIndex, trigger, retrySource, until)
 		if !shouldApply {

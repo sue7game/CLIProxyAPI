@@ -11,5 +11,6 @@ func (s *stateStore) resetAllConsecutive429() {
 	defer s.mu.Unlock()
 	for _, state := range s.credentials {
 		state.Usage.Consecutive429 = 0
+		state.Codex.ConsecutiveUsageLimit = 0
 	}
 }
