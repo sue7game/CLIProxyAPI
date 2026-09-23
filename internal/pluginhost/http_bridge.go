@@ -28,18 +28,35 @@ import (
 )
 
 type hostHTTPClient struct {
-	host          *Host
-	auth          *coreauth.Auth
-	provider      string
-	responseToken string
+	host            *Host
+	auth            *coreauth.Auth
+	provider        string
+	requestProxyURL string
+	responseToken   string
 }
 
 func (h *Host) newHTTPClient(auth *coreauth.Auth, providers ...string) pluginapi.HostHTTPClient {
+	return h.newHTTPClientWithProxy(auth, "", providers...)
+}
+
+func (h *Host) newHTTPClientWithProxy(auth *coreauth.Auth, requestProxyURL string, providers ...string) pluginapi.HostHTTPClient {
 	provider := ""
 	if len(providers) > 0 {
 		provider = providers[0]
 	}
-	return &hostHTTPClient{host: h, auth: auth, provider: provider}
+	return &hostHTTPClient{
+		host:            h,
+		auth:            auth,
+		provider:        provider,
+		requestProxyURL: strings.TrimSpace(requestProxyURL),
+	}
+}
+
+func (c *hostHTTPClient) proxyContext(ctx context.Context) context.Context {
+	if c == nil {
+		return cliproxyexecutor.WithoutRequestProxyURL(ctx)
+	}
+	return cliproxyexecutor.WithRequestProxyURL(ctx, c.requestProxyURL)
 }
 
 func (h *Host) newAuthHTTPClient(auth *coreauth.Auth, provider, responseToken string) pluginapi.HostHTTPClient {
@@ -213,19 +230,18 @@ func (h *Host) currentRuntimeConfig() *config.Config {
 func (c *hostHTTPClient) newHTTPClientForRequest(ctx context.Context, cfg *config.Config, req pluginapi.HTTPRequest, httpReq *http.Request) (*http.Client, func(), error) {
 	profile := req.WireProfile
 	if profile == nil || (!profile.HTTP1Only && !profile.DisableAutoCompression && len(profile.HeaderProfile) == 0) {
-		client := helps.NewProxyAwareHTTPClient(ctx, cfg, c.auth, 0)
+		client := helps.NewProxyAwareHTTPClient(c.proxyContext(ctx), cfg, c.auth, 0)
 		if client == nil {
 			client = &http.Client{}
 		}
 		return client, nil, nil
 	}
 
-	// Priority 1: Auth proxy
-	var proxyStr string
-	if c.auth != nil {
-		proxyStr = strings.TrimSpace(c.auth.ProxyURL)
+	// Priority: request override, then auth proxy, then config proxy.
+	proxyStr := strings.TrimSpace(c.requestProxyURL)
+	if proxyStr == "" && c.auth != nil {
+		proxyStr = strings.TrimSpace(c.auth.EffectiveProxyURL())
 	}
-	// Priority 2: Config proxy
 	if proxyStr == "" && cfg != nil {
 		proxyStr = strings.TrimSpace(cfg.ProxyURL)
 	}
@@ -401,7 +417,7 @@ func (c *hostHTTPClient) newHTTPClientForRequest(ctx context.Context, cfg *confi
 
 		baseTransport.DialTLSContext = func(dialCtx context.Context, network, addr string) (net.Conn, error) {
 			currentReq := reqHolder.get()
-			targetProxy, errProxy := resolveProxyForRequest(currentReq, c.auth, cfg, origProxyFunc)
+			targetProxy, errProxy := resolveProxyForRequest(currentReq, c.requestProxyURL, c.auth, cfg, origProxyFunc)
 			if errProxy != nil {
 				return nil, errProxy
 			}
@@ -544,9 +560,21 @@ func (h *requestHolder) set(req *http.Request) {
 	h.req = req
 }
 
-func resolveProxyForRequest(r *http.Request, auth *coreauth.Auth, cfg *config.Config, proxyFunc func(*http.Request) (*url.URL, error)) (*url.URL, error) {
-	if auth != nil && strings.TrimSpace(auth.ProxyURL) != "" {
-		setting, errParse := proxyutil.Parse(strings.TrimSpace(auth.ProxyURL))
+func resolveProxyForRequest(r *http.Request, requestProxyURL string, auth *coreauth.Auth, cfg *config.Config, proxyFunc func(*http.Request) (*url.URL, error)) (*url.URL, error) {
+	if strings.TrimSpace(requestProxyURL) != "" {
+		setting, errParse := proxyutil.Parse(strings.TrimSpace(requestProxyURL))
+		if errParse != nil {
+			return nil, fmt.Errorf("pluginhost: parse request proxy: %w", errParse)
+		}
+		if setting.Mode == proxyutil.ModeDirect {
+			return nil, nil
+		}
+		if setting.Mode == proxyutil.ModeProxy {
+			return setting.URL, nil
+		}
+	}
+	if auth != nil && strings.TrimSpace(auth.EffectiveProxyURL()) != "" {
+		setting, errParse := proxyutil.Parse(strings.TrimSpace(auth.EffectiveProxyURL()))
 		if errParse != nil {
 			return nil, fmt.Errorf("pluginhost: parse auth proxy: %w", errParse)
 		}

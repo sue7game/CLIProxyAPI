@@ -334,6 +334,7 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 	if m.scheduler != nil {
 		m.scheduler.RecordRemovalTombstone(id, tombstoneEpoch)
 	}
+	m.structuralEpoch.Add(1)
 	m.queueRefreshUnschedule(id)
 	m.invalidateSessionAffinity(id)
 
@@ -428,6 +429,7 @@ func (m *Manager) Load(ctx context.Context) error {
 			m.scheduler.RecordRemovalTombstone(rt.id, rt.epoch)
 		}
 	}
+	m.structuralEpoch.Add(1)
 	m.syncScheduler()
 	return nil
 }
