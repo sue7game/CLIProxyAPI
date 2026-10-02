@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 )
 
 func (h *Host) authorizeGroupingMutation(ctx context.Context, request []byte) (context.Context, error) {

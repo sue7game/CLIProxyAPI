@@ -3,8 +3,8 @@ package cliproxy
 import (
 	"context"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/grouping"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/grouping"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 // previewModelCatalog runs under g.mu and captures one model-registration view.

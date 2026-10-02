@@ -3,7 +3,7 @@ package auth
 import (
 	"context"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 )
 
 type credentialAccessIdentity struct {

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 type callbackAccessDenial struct {
@@ -66,12 +66,12 @@ func (h *Host) rememberCallbackAccessDenial(ctx context.Context, method string, 
 	}
 	id := strings.TrimSpace(req.HostCallbackID)
 	if id == "" {
-		id = h.groupedStreamOwner(method, req.StreamID)
+		id = h.groupedStreamOwner(ctx, method, req.StreamID)
 	}
 	h.callbackContexts.mu.RLock()
 	entry := h.callbackContexts.contexts[id]
 	h.callbackContexts.mu.RUnlock()
-	if entry.pluginID == "" || entry.pluginID != hostCallbackPluginIDFromContext(ctx) {
+	if entry.pluginID == "" || entry.pluginID != hostCallbackPluginIDFromContext(ctx) || entry.instance != hostCallbackInstanceFromContext(ctx) {
 		return
 	}
 	entry.denial.record(err)

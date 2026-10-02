@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 )
 
 func groupingPluginExecutorDenied() *interfaces.ErrorMessage {

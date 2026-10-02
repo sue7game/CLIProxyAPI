@@ -3,20 +3,32 @@ package openai
 import (
 	"context"
 
-	codexmodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/models"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 func (h *OpenAIAPIHandler) codexClientModelsForRequest(ctx context.Context, models []map[string]any, version string) (map[string]any, error) {
-	optimize := h != nil && h.Cfg != nil && h.Cfg.CodexOptimizeMultiAgentV2
+	optimize := h != nil && h.Cfg != nil && h.Cfg.Client.Codex.OptimizeMultiAgentV2
+	applyPatchEnabled := h != nil && h.Cfg != nil && h.Cfg.Client.Codex.EnableApplyPatch
 	if !h.CredentialGroupingEnabled() {
-		return codexmodels.BuildResponseForClient(models, registry.GetGlobalRegistry().GetModelProviders, optimize, version), nil
+		var applyPatch codexmodels.ApplyPatchCapabilityForModelFunc
+		if applyPatchEnabled {
+			applyPatch = h.SupportsApplyPatchModel
+		}
+		r := registry.GetGlobalRegistry()
+		return codexmodels.BuildResponseForClientWithToolCapabilities(models, r.GetModelProviders, r.GetResponsesWebSearchCapability, applyPatch, optimize, version), nil
 	}
 	catalog, err := h.RequestModelCatalog(ctx, "openai")
 	if err != nil {
 		return nil, err
 	}
-	return codexmodels.BuildResponseForCredentialCatalog(catalog, optimize, version), nil
+	var applyPatch codexmodels.ApplyPatchCapabilityForModelFunc
+	if applyPatchEnabled {
+		applyPatch = func(id string) bool {
+			return h.AuthManager.SupportsApplyPatchForProviders(catalog.Providers[id])
+		}
+	}
+	return codexmodels.BuildResponseForCredentialCatalogWithToolCapabilities(catalog, applyPatch, optimize, version), nil
 }
 
 func (h *OpenAIAPIHandler) codexClientModelsResponse(clientVersion ...string) map[string]any {
@@ -24,8 +36,13 @@ func (h *OpenAIAPIHandler) codexClientModelsResponse(clientVersion ...string) ma
 	if len(clientVersion) > 0 {
 		version = clientVersion[0]
 	}
-	optimizeMultiAgentV2 := h != nil && h.Cfg != nil && h.Cfg.CodexOptimizeMultiAgentV2
-	return codexmodels.BuildResponseForClient(h.Models(), registry.GetGlobalRegistry().GetModelProviders, optimizeMultiAgentV2, version)
+	optimizeMultiAgentV2 := h != nil && h.Cfg != nil && h.Cfg.Client.Codex.OptimizeMultiAgentV2
+	var applyPatchCapabilityForModel codexmodels.ApplyPatchCapabilityForModelFunc
+	if h != nil && h.Cfg != nil && h.Cfg.Client.Codex.EnableApplyPatch {
+		applyPatchCapabilityForModel = h.SupportsApplyPatchModel
+	}
+	modelRegistry := registry.GetGlobalRegistry()
+	return codexmodels.BuildResponseForClientWithToolCapabilities(h.Models(), modelRegistry.GetModelProviders, modelRegistry.GetResponsesWebSearchCapability, applyPatchCapabilityForModel, optimizeMultiAgentV2, version)
 }
 
 // CodexClientModelsResponse builds a Codex client model response.

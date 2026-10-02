@@ -6,33 +6,36 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func TestGroupingModelCallbacksRequireOwnerAndPreservePrincipal(t *testing.T) {
 	host, _, _, id, caller := groupingCallbackFixture(t)
 	calls := 0
-	check := func(ctx context.Context) {
+	check := func(ctx context.Context, req handlers.ModelExecutionRequest) {
 		t.Helper()
 		principal, ok := access.AuthenticatedPrincipalFromContext(ctx)
 		if !ok || principal.Subject != "verified" {
 			t.Fatal("trusted principal was not preserved")
 		}
+		if req.Path != "/v1/images/generations" {
+			t.Fatalf("v8 model request path lost: %q", req.Path)
+		}
 		calls++
 	}
 	host.SetModelExecutor(&fakeHostModelExecutor{
-		executeModel: func(ctx context.Context, _ handlers.ModelExecutionRequest) (handlers.ModelExecutionResponse, *interfaces.ErrorMessage) {
-			check(ctx)
+		executeModel: func(ctx context.Context, req handlers.ModelExecutionRequest) (handlers.ModelExecutionResponse, *interfaces.ErrorMessage) {
+			check(ctx, req)
 			return handlers.ModelExecutionResponse{StatusCode: http.StatusOK}, nil
 		},
-		executeModelStream: func(ctx context.Context, _ handlers.ModelExecutionRequest) (handlers.ModelExecutionStream, *interfaces.ErrorMessage) {
-			check(ctx)
+		executeModelStream: func(ctx context.Context, req handlers.ModelExecutionRequest) (handlers.ModelExecutionStream, *interfaces.ErrorMessage) {
+			check(ctx, req)
 			chunks := make(chan handlers.ModelExecutionChunk)
 			close(chunks)
 			return handlers.ModelExecutionStream{StatusCode: http.StatusOK, Chunks: chunks}, nil
@@ -43,7 +46,7 @@ func TestGroupingModelCallbacksRequireOwnerAndPreservePrincipal(t *testing.T) {
 		if stream {
 			method = pluginabi.MethodHostModelExecuteStream
 		}
-		req, err := json.Marshal(rpcHostModelExecutionRequest{HostCallbackID: id, HostModelExecutionRequest: pluginapi.HostModelExecutionRequest{Stream: stream}})
+		req, err := json.Marshal(rpcHostModelExecutionRequest{HostCallbackID: id, HostModelExecutionRequest: pluginapi.HostModelExecutionRequest{Stream: stream, Path: "/v1/images/generations"}})
 		if err != nil {
 			t.Fatal(err)
 		}

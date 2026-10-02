@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 const otherDeleteIdentity = "45b66f30-d5f5-4c6f-8a8a-bf88b74ff677"

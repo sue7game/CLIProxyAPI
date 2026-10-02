@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 func groupingCallbackDenied() error {
@@ -40,6 +40,9 @@ func (h *Host) resolveGroupingCallbackContext(ctx context.Context, callbackID st
 	entry, exists := registry.contexts[callbackID]
 	registry.mu.RUnlock()
 	if !exists || entry.ctx == nil || entry.pluginID == "" || entry.pluginID != caller {
+		return nil, groupingCallbackDenied()
+	}
+	if instance := hostCallbackInstanceFromContext(ctx); entry.instance != instance || (instance != nil && instance.closed.Load()) {
 		return nil, groupingCallbackDenied()
 	}
 	if err := entry.ctx.Err(); err != nil {

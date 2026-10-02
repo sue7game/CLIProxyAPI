@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // AuthorizeRetainedCredential checks both the original and current credential.

@@ -4,9 +4,9 @@ import (
 	"context"
 	"os"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/groupingapi"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/grouping"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/groupingapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/grouping"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 func (g *groupingService) activate(ctx context.Context, expected uint64, mutation groupingapi.Mutation) (groupingapi.ApplyResult, error) {
@@ -76,7 +76,7 @@ func (g *groupingService) commitActivation(cfg *config.Config, expected uint64, 
 	if err != nil {
 		return empty, grouping.ErrUnavailable
 	}
-	change, err := prepareGroupingConfigWrite(g.owner.configPath, before, cfg)
+	change, err := prepareGroupingActivationConfig(g.owner.configPath, before, cfg)
 	if err != nil {
 		return empty, err
 	}

@@ -6,9 +6,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/groupingapi"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/groupingapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // WithGroupingBackend installs local grouping administration behind management auth.
@@ -49,7 +49,7 @@ func (s *Server) BeginCredentialAccessActivation() (func(), error) {
 
 func (s *Server) groupingReadinessMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if strings.HasPrefix(c.Request.URL.Path, "/v0/management/") {
+		if isGroupingManagementPath(c.Request.URL.Path) {
 			c.Next()
 			return
 		}
@@ -60,6 +60,18 @@ func (s *Server) groupingReadinessMiddleware() gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+func isGroupingManagementPath(path string) bool {
+	if path == "/management.html" {
+		return true
+	}
+	for _, prefix := range []string{"/v0/management", "/v8/management"} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) setGroupingReadiness(cfg *config.Config) {

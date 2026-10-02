@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 func codexClientMetadataModelID(id string, lookup modelInfoLookupFunc) string {
@@ -151,13 +151,21 @@ func codexClientThinkingSupport(model map[string]any) *registry.ThinkingSupport 
 }
 
 func applyCodexClientVisibilityOverride(entry map[string]any, id string) {
+	if isCodexClientImageOrVideoModel(id) {
+		entry["visibility"] = "hide"
+	}
+}
+
+func isCodexClientImageOrVideoModel(id string) bool {
 	target := strings.TrimSpace(id)
 	if idx := strings.Index(target, "/"); idx != -1 {
 		target = strings.TrimSpace(target[idx+1:])
 	}
 	switch target {
 	case "grok-imagine-image-quality", "gpt-image-1.5", "gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5", "grok-imagine-image", "grok-imagine-image-2.0", "grok-imagine-video", "grok-imagine-video-1.5", "grok-imagine-video-1.5-preview":
-		entry["visibility"] = "hide"
+		return true
+	default:
+		return false
 	}
 }
 

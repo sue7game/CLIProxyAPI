@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 // ProvidersForModelFunc returns the providers registered for a model.
@@ -31,19 +31,31 @@ func BuildResponseForClient(availableModels []map[string]any, providersForModel 
 // BuildResponseForClientWithCPACapabilities builds a client response while
 // allowing Home to supply capability metadata independent of the local registry.
 func BuildResponseForClientWithCPACapabilities(availableModels []map[string]any, providersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string) map[string]any {
+	return BuildResponseForClientWithToolCapabilities(availableModels, providersForModel, webSearchCapabilityForModel, nil, optimizeMultiAgentV2, clientVersion)
+}
+
+// BuildResponseForClientWithToolCapabilities adds executor-backed tool support
+// independently of template metadata and legacy provider restrictions.
+func BuildResponseForClientWithToolCapabilities(availableModels []map[string]any, providersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, applyPatchCapabilityForModel ApplyPatchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string) map[string]any {
 	return map[string]any{
-		"models": buildCodexClientModels(availableModels, providersForModel, webSearchCapabilityForModel, optimizeMultiAgentV2, clientVersion, registry.LookupModelInfo),
+		"models": buildCodexClientModelsWithToolCapabilities(availableModels, providersForModel, webSearchCapabilityForModel, applyPatchCapabilityForModel, optimizeMultiAgentV2, clientVersion, registry.LookupModelInfo),
 	}
 }
 
 // BuildResponseForCredentialCatalog uses only authorized route metadata.
 // Public client templates remain shared, but never add model IDs or other clients' metadata.
 func BuildResponseForCredentialCatalog(catalog registry.CredentialModelCatalog, optimizeMultiAgentV2 bool, clientVersion string) map[string]any {
+	return BuildResponseForCredentialCatalogWithToolCapabilities(catalog, nil, optimizeMultiAgentV2, clientVersion)
+}
+
+// BuildResponseForCredentialCatalogWithToolCapabilities combines scoped route metadata
+// with executor capabilities evaluated only for authorized catalog providers.
+func BuildResponseForCredentialCatalogWithToolCapabilities(catalog registry.CredentialModelCatalog, applyPatchCapabilityForModel ApplyPatchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string) map[string]any {
 	return map[string]any{
-		"models": buildCodexClientModels(catalog.Models,
+		"models": buildCodexClientModelsWithToolCapabilities(catalog.Models,
 			func(id string) []string { return catalog.Providers[id] },
 			func(id string) *bool { return catalog.WebSearch[id] },
-			optimizeMultiAgentV2, clientVersion, catalog.LookupModelInfo),
+			applyPatchCapabilityForModel, optimizeMultiAgentV2, clientVersion, catalog.LookupModelInfo),
 	}
 }
 

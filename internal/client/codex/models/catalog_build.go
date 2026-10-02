@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-func buildCodexClientModels(models []map[string]any, providersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string, lookup modelInfoLookupFunc) []map[string]any {
+func buildCodexClientModelsWithToolCapabilities(models []map[string]any, providersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, applyPatchCapabilityForModel ApplyPatchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string, lookup modelInfoLookupFunc) []map[string]any {
 	templates, defaultTemplate, err := loadCodexClientModelTemplates()
 	if err != nil || defaultTemplate == nil {
 		return nil
@@ -19,40 +19,24 @@ func buildCodexClientModels(models []map[string]any, providersForModel Providers
 		}
 
 		metadataID := codexClientMetadataModelID(id, lookup)
-
-		if template, ok := templates[metadataID]; ok {
-			entry := cloneCodexClientModelMap(template)
-			entry["slug"] = id
-			info := lookup(id)
-			applyCodexClientModelCapabilities(entry, id, metadataID, info, providersForModel, clientVersion, lookup)
-			applyCodexClientDisplayName(entry, model)
-			applyCodexClientDescription(entry, model)
-			applyCodexClientBaseInstructions(entry, model)
-			applyCodexClientMaxContextLengthOverride(entry, model)
-			applyCodexClientMaxTokens(entry, model)
-			if thinkingSupport := codexClientThinkingSupport(model); thinkingSupport != nil {
-				applyCodexClientThinkingMetadata(entry, thinkingSupport, clientVersion)
-			}
-			applyCodexClientProviderCapabilities(entry, id, true, providersForModel)
-			applyCPAWebSearchCapability(entry, id, webSearchCapabilityForModel, clientVersion)
-			sanitizeCodexClientReasoningMetadata(entry, clientVersion)
-			applyCodexClientVisibilityOverride(entry, id)
-			if optimizeMultiAgentV2 {
-				entry["multi_agent_version"] = "v2"
-			}
-			applyCodexClientDevinDisplayName(entry, id, model, providersForModel, lookup)
-			result = append(result, entry)
-			continue
+		template, isTemplate := templates[metadataID]
+		var entry map[string]any
+		if isTemplate {
+			entry = buildCodexClientTemplateEntry(template, model, id, metadataID, providersForModel, clientVersion, lookup)
+		} else {
+			entry = cloneCodexClientModelMap(defaultTemplate)
+			applyCodexClientModelMetadataWithLookup(entry, id, model, optimizeMultiAgentV2, clientVersion, lookup)
 		}
-
-		entry := cloneCodexClientModelMap(defaultTemplate)
-		applyCodexClientModelMetadataWithLookup(entry, id, model, optimizeMultiAgentV2, clientVersion, lookup)
 		applyCodexClientMaxTokens(entry, model)
-		applyCodexClientProviderCapabilities(entry, id, false, providersForModel)
+		applyCodexClientProviderCapabilities(entry, id, isTemplate, providersForModel)
 		applyCPAWebSearchCapability(entry, id, webSearchCapabilityForModel, clientVersion)
 		sanitizeCodexClientReasoningMetadata(entry, clientVersion)
 		applyCodexClientVisibilityOverride(entry, id)
+		if optimizeMultiAgentV2 {
+			entry["multi_agent_version"] = "v2"
+		}
 		applyCodexClientDevinDisplayName(entry, id, model, providersForModel, lookup)
+		applyCodexClientApplyPatchCapability(entry, id, applyPatchCapabilityForModel)
 		result = append(result, entry)
 	}
 
@@ -63,6 +47,20 @@ func buildCodexClientModels(models []map[string]any, providersForModel Providers
 	})
 
 	return result
+}
+
+func buildCodexClientTemplateEntry(template, model map[string]any, id, metadataID string, providersForModel ProvidersForModelFunc, clientVersion string, lookup modelInfoLookupFunc) map[string]any {
+	entry := cloneCodexClientModelMap(template)
+	entry["slug"] = id
+	applyCodexClientModelCapabilities(entry, id, metadataID, lookup(id), providersForModel, clientVersion, lookup)
+	applyCodexClientDisplayName(entry, model)
+	applyCodexClientDescription(entry, model)
+	applyCodexClientBaseInstructions(entry, model)
+	applyCodexClientMaxContextLengthOverride(entry, model)
+	if thinkingSupport := codexClientThinkingSupport(model); thinkingSupport != nil {
+		applyCodexClientThinkingMetadata(entry, thinkingSupport, clientVersion)
+	}
+	return entry
 }
 
 func maxCodexClientTemplatePriority(templates map[string]map[string]any) int {

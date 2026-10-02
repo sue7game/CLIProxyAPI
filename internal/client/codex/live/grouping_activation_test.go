@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 )
 
 func TestGroupingActivationSerializesDirectMediaAdmission(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 // APIKeyRotation identifies an explicit replacement of one existing API token.
@@ -25,6 +25,13 @@ type ConfigApplyRequest struct {
 	Proposed      *config.Config
 	Operation     string
 	TokenRotation *APIKeyRotation
+	// SourceYAML is the exact persisted document read before a v8 mutation.
+	// CanonicalYAML retains explicit nulls, empty maps, and opaque plugin fields.
+	// The controller must compare SourceYAML before committing CanonicalYAML,
+	// filling only generated grouping identities via PrepareGroupingConfigDocument.
+	// Both contain secrets and must never be logged or exposed in responses.
+	SourceYAML    []byte `json:"-" yaml:"-"`
+	CanonicalYAML []byte `json:"-" yaml:"-"`
 }
 
 // ConfigApplyHook commits a managed configuration mutation synchronously.

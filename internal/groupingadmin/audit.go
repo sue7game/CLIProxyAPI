@@ -1,8 +1,8 @@
 package groupingadmin
 
 import (
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/groupingapi"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/grouping"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/groupingapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/grouping"
 )
 
 func mutationAudit(expected uint64, mutation groupingapi.Mutation) groupingapi.AuditRecord {

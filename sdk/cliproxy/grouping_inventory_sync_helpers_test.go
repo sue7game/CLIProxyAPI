@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 func inventoryConfigRequest(f *groupingIntegrationFixture, mutate func(*config.Config)) management.ConfigApplyRequest {

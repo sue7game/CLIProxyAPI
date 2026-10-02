@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/groupingapi"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/grouping"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/groupingapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/grouping"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 func (g *groupingService) initialize(ctx context.Context) (groupingapi.Status, error) {

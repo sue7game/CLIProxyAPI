@@ -3,7 +3,7 @@ package groupingadmin
 import (
 	"sort"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/grouping"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/grouping"
 )
 
 // Group unions and cached sorted views avoid recomputing per-credential access

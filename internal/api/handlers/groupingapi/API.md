@@ -1,9 +1,40 @@
 # Grouping management additions
 
 All endpoints remain under the existing authenticated management route group.
+The current prefix is `/v8/management/grouping`; backend v0 compatibility remains
+available, but clients must not fall back to it for v8 configuration writes.
 The backend interface and existing mutation request bodies remain unchanged.
 These additions do not change registration defaults or the meaning of `all` in
 authorization. Newly registered objects without an explicit group still use `all`.
+
+## v8 configuration transactions
+
+All `/v8/management/config` and `/v8/management/config.yaml` mutations preserve
+the canonical YAML tree and synchronously validate, persist, and publish through
+the grouping controller. A missing required controller fails with 503. Source
+document bytes are compared before commit; the transaction fills only permanent
+`grouping-id` fields rather than serializing runtime defaults onto the document.
+Explicit nulls, empty maps, inherited provider values, opaque plugin settings,
+and retained TURN secrets are not replaced by their runtime projections.
+
+GET configuration responses include a strong `ETag` for the full stored document,
+including when reading one subtree. Send it in `If-Match` with subsequent writes.
+When a grouping controller is installed, removing existing token or credential
+identities requires that header: absence returns 428; stale, weak, or wildcard
+values return 412. A failed precondition does not write or publish configuration.
+The ETag is exposed through CORS and `If-Match` is explicitly allowed.
+
+Rotate one existing API token with
+`PATCH /v8/management/access/api-keys` and JSON `{"old":"previous","new":"replacement"}`.
+Both secret values belong only in the body. The previous value is an exact
+precondition; a missing token returns 404. `index/value` is not accepted by this
+route. The logical token ID and group survive the synchronous rotation. Ordinary
+configuration-list writes that add and remove tokens together remain ambiguous
+and return 409 while grouping applies; an ETag does not authorize implicit rotation.
+
+Credential source IDs are immutable through `/v8/management/credentials/fields`.
+Changing `grouping_id`, its hyphenated spelling, or nested fields underneath either
+returns 409. Use grouping binding/reconciliation operations, not metadata editing.
 
 ## Identity list queries
 

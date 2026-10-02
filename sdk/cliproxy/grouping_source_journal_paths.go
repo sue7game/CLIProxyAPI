@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/grouping"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/grouping"
 )
 
 func (g *groupingService) canonicalSourcePath(path string) (string, string, error) {

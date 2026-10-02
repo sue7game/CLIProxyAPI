@@ -4,8 +4,8 @@ import (
 	"reflect"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginstore"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginstore"
 )
 
 const pluginConfigSideEffectsKey = "management.plugin-config-side-effects"
@@ -50,6 +50,9 @@ func (h *Handler) commitDeletedPluginConfig(c *gin.Context, id, path string, del
 }
 
 func (h *Handler) commitPluginConfig(c *gin.Context, operation string, mutate func(*config.Config) error) bool {
+	if c.GetBool(ConfigV8ContextKey) {
+		return h.applyConfigV8RuntimeMutation(c, mutate, projectV8PluginMutation)
+	}
 	if h.requiresConfigApply() {
 		return h.applyConfigMutation(c, operation, func(candidate *config.Config) (*APIKeyRotation, error) {
 			return nil, mutate(candidate)

@@ -1,9 +1,9 @@
 package cliproxy
 
 import (
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/groupingapi"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/grouping"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/groupingadmin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/groupingapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/grouping"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/groupingadmin"
 )
 
 func (g *groupingService) backend() (groupingapi.Backend, error) {

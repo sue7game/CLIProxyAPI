@@ -5,14 +5,14 @@ import (
 	"encoding/json"
 
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	log "github.com/sirupsen/logrus"
 )
 
 func newGroupingBridgeID() string {
 	id, err := uuid.NewRandom()
 	if err != nil {
-		log.Errorf("pluginhost: create stream bridge identifier: %v", err)
+		log.Errorf("pluginhost: create callback bridge identifier: %v", err)
 		return ""
 	}
 	return id.String()
@@ -26,12 +26,12 @@ func (h *Host) authorizeGroupedStream(ctx context.Context, method, id string) er
 	if manager == nil || !manager.CredentialAccessPolicyEnabled() {
 		return nil
 	}
-	owner := h.groupedStreamOwner(method, id)
+	owner := h.groupedStreamOwner(ctx, method, id)
 	_, err = h.resolveGroupingCallbackContext(ctx, owner)
 	return err
 }
 
-func (h *Host) groupedStreamOwner(method, id string) string {
+func (h *Host) groupedStreamOwner(ctx context.Context, method, id string) string {
 	switch method {
 	case pluginabi.MethodHostModelStreamRead, pluginabi.MethodHostModelStreamClose:
 		if h.modelStreams != nil {
@@ -43,7 +43,8 @@ func (h *Host) groupedStreamOwner(method, id string) string {
 		if h.httpStreams != nil {
 			h.httpStreams.mu.Lock()
 			defer h.httpStreams.mu.Unlock()
-			return h.httpStreams.streams[id].ownerCallbackID
+			key := hostHTTPStreamKey{pluginID: hostCallbackPluginIDFromContext(ctx), instance: hostCallbackInstanceFromContext(ctx), streamID: id}
+			return h.httpStreams.streams[key].ownerCallbackID
 		}
 	case pluginabi.MethodHostStreamEmit, pluginabi.MethodHostStreamClose:
 		if h.streams != nil {
@@ -71,7 +72,7 @@ func (h *Host) callGroupedStreamClose(ctx context.Context, method string, reques
 	case pluginabi.MethodHostModelStreamClose:
 		return h.callHostModelStreamClose(request)
 	case pluginabi.MethodHostHTTPStreamClose:
-		return h.callHostHTTPStreamClose(request)
+		return h.callHostHTTPStreamClose(ctx, request)
 	default:
 		return h.callHostStreamClose(request)
 	}

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"os"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/grouping"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/grouping"
 )
 
 // The receipt lives beside the policy directory so losing that directory cannot

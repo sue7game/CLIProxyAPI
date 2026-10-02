@@ -2,11 +2,14 @@ package management
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 func (h *Handler) applyConfigAuthStatus(c *gin.Context, auth *coreauth.Auth, disabled bool) bool {
+	if c.GetBool(ConfigV8ContextKey) {
+		return h.applyConfigAuthStatusV8(c, auth, disabled)
+	}
 	if !h.requiresConfigApply() {
 		return false
 	}

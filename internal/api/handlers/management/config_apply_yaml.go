@@ -2,8 +2,8 @@ package management
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 )
 
 func (h *Handler) putConfigYAMLWithApply(c *gin.Context, raw []byte, enabled bool) bool {

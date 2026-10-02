@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func openGroupingTestStream(t *testing.T, host *Host, callbackID, method string) (string, string) {
@@ -21,7 +21,8 @@ func openGroupingTestStream(t *testing.T, host *Host, callbackID, method string)
 	case pluginabi.MethodHostHTTPStreamRead:
 		chunks := make(chan pluginapi.HTTPStreamChunk, 1)
 		chunks <- pluginapi.HTTPStreamChunk{Payload: []byte("http")}
-		return host.httpStreams.openOwned(chunks, nil, callbackID), pluginabi.MethodHostHTTPStreamClose
+		_, pluginID, instance, _ := host.lookupCallbackContext(callbackID)
+		return host.httpStreams.openOwned(pluginID, instance, chunks, nil, nil, callbackID), pluginabi.MethodHostHTTPStreamClose
 	default:
 		id, _, cleanup := host.streams.openOwned(context.Background(), callbackID)
 		t.Cleanup(cleanup)
@@ -68,7 +69,7 @@ func TestGroupingStreamsRejectExpiredCallbackOwner(t *testing.T) {
 	host, _, _, _, caller := groupingCallbackFixture(t)
 	id, release := host.openCallbackContextForPlugin(context.Background(), "plugin-a")
 	streamID, _ := openGroupingTestStream(t, host, id, pluginabi.MethodHostHTTPStreamRead)
-	defer host.httpStreams.close(streamID)
+	defer host.httpStreams.close("plugin-a", nil, streamID)
 	release()
 	if err := host.authorizeGroupedStream(caller, pluginabi.MethodHostHTTPStreamRead, streamID); err == nil {
 		t.Fatal("expired scope still owns stream")

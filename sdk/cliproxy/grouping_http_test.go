@@ -6,13 +6,13 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/groupingapi"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/grouping"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/groupingapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/grouping"
 )
 
 func TestGroupingHTTPAuthenticationAndPermissionMatrix(t *testing.T) {
 	f := newGroupingHTTPFixture(t)
-	response := f.request(t, http.MethodPost, "/v0/management/grouping/initialize", gin.H{}, 0, "")
+	response := f.request(t, http.MethodPost, "/v8/management/grouping/initialize", gin.H{}, 0, "")
 	if response.Code < 400 || f.service.grouping.store != nil {
 		t.Fatal("unauthenticated management initialized policy")
 	}
@@ -74,11 +74,11 @@ func TestGroupingHTTPConfigEditsPublishAuthoritativeUUIDs(t *testing.T) {
 	f.managed(t, http.MethodPost, "/grouping/initialize", gin.H{}, 0)
 	keys := append(f.service.cfg.CloneForRuntime().CodexKey, f.service.cfg.CodexKey[0])
 	keys[len(keys)-1].GroupingID = ""
-	f.managed(t, http.MethodPut, "/codex-api-key", keys, 0)
+	f.managed(t, http.MethodPut, "/config/api-keys/codex", groupingV8CodexPayload(keys), 0)
 	if len(f.service.cfg.CodexKey) != 3 || f.service.cfg.CodexKey[2].GroupingID == "" {
 		t.Fatal("new source UUID was not published")
 	}
-	f.managed(t, http.MethodPatch, "/api-keys", gin.H{"index": 0, "value": "http-rotated-token-only"}, 0)
+	f.managed(t, http.MethodPatch, "/access/api-keys", gin.H{"old": "integration-downstream-only", "new": "http-rotated-token-only"}, 0)
 	if f.service.cfg.APIKeys[0] != "http-rotated-token-only" {
 		t.Fatal("next edit saw a stale Handler snapshot")
 	}

@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/grouping"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/grouping"
 )
 
 // recoverSourceTransaction requires g.mu and only accepts signed, identifiable states.

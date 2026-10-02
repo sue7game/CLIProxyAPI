@@ -3,11 +3,11 @@ package cliproxy
 import (
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/grouping"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/grouping"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 type groupingConfigTransition struct {
@@ -18,6 +18,9 @@ type groupingConfigTransition struct {
 }
 
 func (g *groupingService) managedPolicyTransition(before grouping.Snapshot, cfg *config.Config, rotation *management.APIKeyRotation) (grouping.Snapshot, error) {
+	if err := g.validateManagedGroupingConfigPolicy(before); err != nil {
+		return grouping.Snapshot{}, err
+	}
 	if err := validateManagedTokenTransition(g.current.Load(), cfg, rotation); err != nil {
 		return grouping.Snapshot{}, err
 	}

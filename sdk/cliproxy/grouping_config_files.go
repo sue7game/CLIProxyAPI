@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -26,12 +26,12 @@ func prepareGroupingConfig(path string, current *config.Config) (*config.Config,
 	if _, err := config.EnsureGroupingCredentialIDs(working); err != nil {
 		return nil, nil, err
 	}
-	normalizeGroupingCredentialLists(working)
-	change, err := prepareGroupingConfigWrite(path, data, working)
+	after, err := config.PrepareGroupingConfigDocument(data, working)
 	if err != nil {
 		return nil, nil, err
 	}
-	return working, change, nil
+	normalizeGroupingCredentialLists(working)
+	return working, &groupingFileChange{path: path, before: data, after: after}, nil
 }
 
 func normalizeGroupingCredentialLists(cfg *config.Config) {
@@ -78,16 +78,4 @@ func prepareGroupingConfigWrite(path string, before []byte, cfg *config.Config) 
 		return nil, fmt.Errorf("grouping: cannot read configuration update")
 	}
 	return &groupingFileChange{path: path, before: before, after: after}, nil
-}
-
-func persistGroupingConfig(path string, cfg *config.Config) error {
-	before, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("grouping: cannot read current configuration")
-	}
-	change, err := prepareGroupingConfigWrite(path, before, cfg)
-	if err != nil {
-		return err
-	}
-	return writeGroupingSource(*change)
 }

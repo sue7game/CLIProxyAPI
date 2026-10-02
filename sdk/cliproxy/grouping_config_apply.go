@@ -4,12 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"os"
 	"reflect"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/grouping"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/grouping"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 func (s *Service) applyGroupingConfigMutation(ctx context.Context, request management.ConfigApplyRequest) error {
@@ -63,8 +62,12 @@ func (g *groupingService) commitManagedConfig(ctx context.Context, request manag
 	if err := g.validateReload(proposed); err != nil {
 		return nil, err
 	}
+	change, err := prepareManagedGroupingConfig(g.owner.configPath, request, proposed, g.store != nil)
+	if err != nil {
+		return nil, err
+	}
 	if g.store == nil {
-		if err := persistGroupingConfig(g.owner.configPath, proposed); err != nil {
+		if err := writeUninitializedGroupingConfig(*change); err != nil {
 			return nil, err
 		}
 		g.current.Store(proposed.CloneForRuntime())
@@ -78,14 +81,6 @@ func (g *groupingService) commitManagedConfig(ctx context.Context, request manag
 		return nil, err
 	}
 	after, err := g.managedPolicyTransition(before, proposed, request.TokenRotation)
-	if err != nil {
-		return nil, err
-	}
-	bytes, err := os.ReadFile(g.owner.configPath)
-	if err != nil {
-		return nil, grouping.ErrUnavailable
-	}
-	change, err := prepareGroupingConfigWrite(g.owner.configPath, bytes, proposed)
 	if err != nil {
 		return nil, err
 	}

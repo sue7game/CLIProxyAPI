@@ -2,7 +2,7 @@
 
 更新日期：2026-10-03。适用于当前本地 P 阶段实现，不适用于 Home 双端分组。
 
-**本地开发与本机验收已完成，尚未执行生产发布。** 收尾发现的 OAuth 事务隔离、停用来源、YAML `~` 解析、配置延迟重放及迟到 watcher 事件问题均已修复。最终全库/Service/API race、静态检查、构建、117 项前端测试和本地页面通过，并完成 macOS 虚拟实例的一致备份恢复。本文件不构成已部署、全平台原生运行通过或真实提供商网络兼容承诺。
+已完成 CPA v8.0.11 与管理面板 v1.25.2 的本地合并及验收。管理 API 使用 `/v8/management`，Go 模块使用 `/v8`，后端保留上游的 v0 兼容路由。上游同步的验证证据与此前 P 阶段基线分开记录。本文件不构成已部署、全平台原生运行通过或真实提供商网络兼容承诺。
 
 ## 1. 支持范围与不能混淆的概念
 
@@ -46,12 +46,14 @@ grouping:
 
 初始化/启用需要至少一个可认证的 API key、本地 FileTokenStore、可读取并验证的来源和可写配置/auth 目录。初始化会向来源写入永久 UUID，**不是只读扫描**。先备份配置和 auth 文件，再安排变更窗口。
 
+尚未初始化分组时，v8 配置保存保留上游的原位写行为，兼容单文件 bind mount。初始化后来源写入必须支持同目录原子替换与恢复日志（即使分组暂时关闭）；容器请挂载可写目录，不依赖只允许原位写的单文件挂载。替换失败会拒绝操作，不静默降级为不安全写入。
+
 策略目录采用私有文件权限/平台 ACL 检查和 OS 单写者锁；宽权限、路径替换、密钥或快照异常可能被拒绝。不要放宽到公共可写，也不要通过删 `.writer.lock` 试图允许两个进程同时写。
 
 ### 2.2 首次初始化到启用的顺序
 
 1. 先确认当前是本地模式，并在需要严格隔离时关闭外部代理入口，避免尚未启用分组期间继续走旧授权。
-2. 登录有管理鉴权的面板，读取 `/v0/management/grouping/status`。尚未初始化与已初始化但不健康是两种状态，后者不能重新初始化覆盖。
+2. 登录有管理鉴权的面板，读取 `/v8/management/grouping/status`。尚未初始化与已初始化但不健康是两种状态，后者不能重新初始化覆盖。
 3. 执行显式 initialize。实现先校验来源、补 UUID、准备完整暂存策略，再发布策略目录与安装回执；已有可验证对象登记为 all，成功不会自动启用分组。
 4. 检查 initialized、healthy、revision 和 pending_count；核对重复记录仍是独立 ID。缺稳定身份、无效记录、UUID 冲突须先处理，不以空列表当成功。
 5. 创建具体组，分别选取令牌和凭证改组。查看预览，确认范围扩大；首次初始化后全部为 all，所以“只启用开关”本身不会产生分组隔离。
@@ -76,10 +78,13 @@ grouping:
 
 ### 3.2 API 版本、筛选与预览
 
-所有分组 API 位于现有管理鉴权组 `/v0/management/grouping`。管理密钥不要放 URL、截图、日志或导出文件；列表只提供安全 ID、provider、来源标签、归属与状态，不输出原 key/fingerprint。
+新面板的分组 API 位于现有管理鉴权组 `/v8/management/grouping`，不回退 v0。管理密钥不要放 URL、截图、日志或导出文件；列表只提供安全 ID、provider、来源标签、归属与状态，不输出原 key/fingerprint。
 
 - 初始化之外的写请求用单一带引号的 `If-Match` 修订号。412 表示需刷新，409 表示业务冲突/缺确认，503 表示不可用，不能当作写成功。
 - 成功返回 `applied_revision`。普通批量绑定先整体校验；来源/磁盘失败可能留下恢复日志，不能推断每次失败都等于任何文件都未改变。
+- v8 配置 GET 返回整份持久化文档的 ETag，与分组策略 revision 不同。删除已有凭证或令牌须携带对应来源快照的 `If-Match`；缺少返回 428，过期返回 412。读取新 ETag 后继续提交旧列表仍是不安全做法。
+- 显式令牌轮换使用 `PATCH /v8/management/access/api-keys`，JSON body 为 `old/new`，不在 URL 中传令牌；保留原逻辑 ID 和分组。不把普通列表中的同时删除与新增推断为轮换。
+- v8 提供商配置是渠道及嵌套 `keys` 列表。每条 key 保留独立 `grouping-id`；OpenAI 兼容无 key 渠道的身份位于渠道自身。原始 null、空值、继承关系和插件不透明配置不得被运行态默认值覆盖。
 - 实际筛选：`filter_mode=actual`，省略 group_id 表示全部归属，`group_id=all` 只看实际 all；包含 pending/tombstone。
 - 可访问筛选：仅 credentials 接受 `filter_mode=accessible` 且必须有 group_id；只看分组规则允许的 active 来源。具体组包括自身/all，all 包括所有 active，不代表配额或健康可用。
 - limit 为 1–500；offset 非负、要求 limit。分页元数据是 `pagination.total/offset/limit`；同次响应由一个快照生成，多页 revision 不同应重新读取。
@@ -161,13 +166,15 @@ OAuth staged 期间由 `sourcePending` 和事务锁排除普通改组、启停�
 
 分组页面在 [用户的管理前端 fork](https://github.com/sue7game/Cli-Proxy-API-Management-Center.git) 中，固定菜单不依赖插件，核心位于 `src/features/grouping/`，菜单/路由是少量原文件接入。
 
-该 fork 原本缺少后端已下载面板中的插件菜单。**不要直接覆盖当前 `management.html` 并假定旧功能全部保留。** 本任务未替换下载面板，也未改变自动资源更新策略；正式部署前须验证面板功能差异及后续更新来源，避免下一次资源更新丢失分组入口。
+本次上游合并恢复新面板的插件菜单，同时保留不依赖插件的分组菜单、插件宿主及前端 fork 的 429 定制代码。本任务仅构建、验证本地源代码，未替换生产 `management.html`，也未改变自动资源更新策略。正式部署必须选择包含这些定制的前端构建及更新来源；自动下载官方原版仍可能移除分组入口。
 
-早期 Chrome 切回远端后已停止操作；2026-10-03 通过 CUA 的独立内置浏览器恢复本地验收，没有绕过系统签名限制。虚拟实例已完成初始化、分组 CRUD/删除保护、独立改组、筛选、凭证与模型预览、分页、409/412、断线锁定/恢复以及危险确认检查。390×844 和 1280×900 视口无全页横向溢出；Esc/取消焦点返回、Tab 循环已实测。初始化提示明确会登记来源、可能写永久 ID、须先备份且不自动启用。
+既有兼容缺口：前端的旧 `auth-files/auto-429-probe`、`auth-files/auto-429-events` 调用在合并前后 CPA 中均无对应实现。这不是此次丢失路由，也不能宣称端到端可用。本轮保留前端代码，不新增假接口或另起一套 429 后端；它与已有插件机制及本次分组规则不同。
 
-前端最终 117 项测试、类型检查、lint、格式和构建通过。测试仅使用本地虚拟材料，未使用真实上游凭证进行提供商推理或 OAuth 登录；不据此承诺所有浏览器、语言和第三方环境兼容。
+P 阶段基线通过 CUA 独立内置浏览器验收，没有绕过系统签名限制；覆盖初始化、分组 CRUD/删除保护、独立改组、筛选、凭证与模型预览、分页、409/412、断线锁定/恢复及危险确认。此次 v8 合并补验初始化、默认 all、重复记录独立改组、令牌绑定、启用、实际归属/可访问筛选及新版提供商表单保存后的 UUID/原组保留。390×844、1280×900 无全页横向溢出；弹窗焦点循环及 Escape 关闭后焦点恢复正常。
 
-最终后端构建补验来源外部变更待核对、显式 rebind 保留 UUID/原组、tombstone 阻止删组及来源重现仍须确认。截图保存在 `/tmp/cpa-grouping-acceptance-overview.jpg` 和 `/tmp/cpa-grouping-acceptance-final.jpg`。验收后已关闭临时前后端进程和自建内置浏览器标签，未操作用户的远端页面。
+当前前端 1,494 项 Bun 测试、134 项分组 Node 测试、独立类型检查、lint 和构建通过。开发要求 Bun 1.3.14、Node 24+，旧 Node 会明确报错，不需要修改系统默认运行时。测试仅使用本地虚拟材料，未使用真实上游凭证进行提供商推理或 OAuth 登录；不据此承诺所有浏览器、语言和第三方环境兼容。
+
+P 阶段截图为 `/tmp/cpa-grouping-acceptance-overview.jpg` 和 `/tmp/cpa-grouping-acceptance-final.jpg`；v8 最终静态产物截图为 `/tmp/cpa-v8-final-static.jpg`，移动端为 `/tmp/cpa-v8-grouping-mobile.jpg`。静态面板与冻结后端成功连接、读回重启后的分组，控制台无错误或警告。临时前后端进程与自建标签已关闭，视口恢复；未操作用户远端页面。
 
 ## 7. 低交叉接入点：上游更新核验清单
 
@@ -202,7 +209,7 @@ OAuth staged 期间由 `sourcePending` 和事务锁排除普通改组、启停�
 
 **不支持分组的旧版二进制可能忽略新配置并按原 API keys 放行，造成分组绕过。** 不能将只换回旧二进制、删除策略、移除安装回执或清空 UUID 当成安全回滚。确需降级时先隔离入口，确认有等效外部限制或不再提供服务，再制定完整数据与权限恢复方案；本任务未执行任何生产回滚。
 
-### 8.2 当前可用证据与未验收项
+### 8.2 P 阶段基线证据（上游合并前）
 
 - 冻结后的非 race 全库：`/tmp/cpa-final-oct03-all-tests.log`。
 - 冻结后的 Service 全包 race：`/tmp/cpa-final-oct03-service-race.log`；API 全部子包 race：`/tmp/cpa-final-oct03-api-final-race.log`。
@@ -219,4 +226,16 @@ OAuth staged 期间由 `sourcePending` 和事务锁排除普通改组、启停�
 
 该检查不包含 HTTP、完整调度候选遍历、多令牌认证扫描、真实上游或并发改组压力，不能据此宣传零开销或端到端吞吐倍率。
 
-上述日志均为本机临时证据，详细命令和范围见 `docs/credential-token-groups-p0_CN.md`。生产发布前仍须核对面板功能差异/更新来源、实际发布系统的原生权限和文件系统故障恢复、真实提供商网络以及完整请求/并发性能。没有执行提交、推送、部署、生产配置变更或 Home H0–H4。
+上述日志均为本机临时证据，详细命令和范围见 `docs/credential-token-groups-p0_CN.md`。生产发布前仍须核对面板更新来源、实际发布系统的原生权限和文件系统故障恢复、真实提供商网络以及完整请求/并发性能。此次上游同步已获准创建本地备份及合并提交；不执行推送、部署、生产配置变更或 Home H0–H4。
+
+### 8.3 本次 v8 上游合并证据
+
+- CPA upstream：`e2bff0107bb307337aaa19018ccddd55f64253d5`（v8.0.11）；原分组实现本地备份提交 `c9441b26`。
+- 面板 upstream：`752e0ee772220ce49aae1221a3f39f23236590d7`（v1.25.2）；备份提交 `57b3de4`；本地合并提交 `025f8ef`。两个仓库使用 `codex/upstream-v8-sync`，原 main 保留。
+- 合并前完整备份位于仓库父目录的 `merge-backups/20261003-upstream-sync`，包含源码、patch、Git bundle 和 SHA-256/权限清单；未收集真实忽略配置、auth 或 `.env`。
+- 修复并覆盖：未被接纳的外部凭证/令牌变更不能由无关保存批准；已 pending 的来源保持 pending；重复 key 夹空记录可继续保存；null/alias 启停保留其他配置；两个版本的管理控制面仍可鉴权访问；流式日志收尾竞态不再丢块。
+- 冻结后全库：`/tmp/cpa-v8-frozen-all.log`；Service 全包 race：`/tmp/cpa-v8-service-final-race.log`；API 全子包 race：`/tmp/cpa-v8-api-race-response-writer-fixed.log`；日志竞态定向连续 100 次通过。
+- core auth 全包 race：`/tmp/cpa-v8-auth-full-race.log`；插件和各请求处理链另有分包/race 回归。
+- vet、原生构建、Windows/Linux 交叉构建：`/tmp/cpa-v8-frozen-vet.log`、`/tmp/cpa-v8-frozen-build.log`、`/tmp/cpa-v8-frozen-windows.log`、`/tmp/cpa-v8-frozen-linux.log`。交叉编译不等于目标系统原生验收。
+- 前端完整验证：相邻面板仓库 `node_modules/.cache/verify-v8-final.log`；单文件 `dist/index.html` SHA-256 为 `480f321301be5c0bf806a87fe6d36a7d9ce2982230e623f9773452e048c2b59b`。
+- 最终二进制原路径恢复：`/tmp/cpa-v8-local-recovery.log`。虚拟实例停机后完整复制来源/策略/回执，字节和权限相同；保留原目录，恢复后 namespace、revision、组、身份、状态和绑定完全一致。未模拟断电故障。

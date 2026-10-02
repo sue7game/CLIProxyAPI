@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
 )
 
 func completedBatchUpdate(t *testing.T, service *Service, first, second watcher.AuthUpdate) watcher.AuthUpdate {

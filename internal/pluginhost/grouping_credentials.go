@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 func (h *Host) authorizePluginCredential(ctx context.Context, auth *coreauth.Auth) error {

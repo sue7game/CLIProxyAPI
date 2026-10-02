@@ -12,12 +12,12 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/groupingapi"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	executor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/groupingapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	executor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 const groupingHTTPManagementKey = "local-grouping-management-test-only"
@@ -46,7 +46,7 @@ func newGroupingHTTPFixture(t *testing.T) *groupingHTTPFixture {
 	return f
 }
 
-func (f *groupingHTTPFixture) request(t *testing.T, method, path string, body any, revision uint64, key string) *httptest.ResponseRecorder {
+func (f *groupingHTTPFixture) request(t *testing.T, method, path string, body any, revision uint64, key string, headers ...map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	var encoded []byte
 	if body != nil {
@@ -65,6 +65,11 @@ func (f *groupingHTTPFixture) request(t *testing.T, method, path string, body an
 	if revision != 0 {
 		req.Header.Set("If-Match", fmt.Sprintf("\"%d\"", revision))
 	}
+	for _, extra := range headers {
+		for name, value := range extra {
+			req.Header.Set(name, value)
+		}
+	}
 	// Untrusted policy headers must not widen the authenticated token's scope.
 	req.Header.Set("X-Group-ID", "all")
 	req.Header.Set("X-Internal-Operation", "management")
@@ -75,7 +80,7 @@ func (f *groupingHTTPFixture) request(t *testing.T, method, path string, body an
 
 func (f *groupingHTTPFixture) managed(t *testing.T, method, path string, body any, revision uint64) *httptest.ResponseRecorder {
 	t.Helper()
-	response := f.request(t, method, "/v0/management"+path, body, revision, groupingHTTPManagementKey)
+	response := f.request(t, method, "/v8/management"+path, body, revision, groupingHTTPManagementKey)
 	if response.Code != http.StatusOK {
 		t.Fatalf("management %s %s: %d %s", method, path, response.Code, response.Body.String())
 	}
