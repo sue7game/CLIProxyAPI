@@ -1,9 +1,23 @@
 package openai
 
 import (
+	"context"
+
 	codexmodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/models"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 )
+
+func (h *OpenAIAPIHandler) codexClientModelsForRequest(ctx context.Context, models []map[string]any, version string) (map[string]any, error) {
+	optimize := h != nil && h.Cfg != nil && h.Cfg.CodexOptimizeMultiAgentV2
+	if !h.CredentialGroupingEnabled() {
+		return codexmodels.BuildResponseForClient(models, registry.GetGlobalRegistry().GetModelProviders, optimize, version), nil
+	}
+	catalog, err := h.RequestModelCatalog(ctx, "openai")
+	if err != nil {
+		return nil, err
+	}
+	return codexmodels.BuildResponseForCredentialCatalog(catalog, optimize, version), nil
+}
 
 func (h *OpenAIAPIHandler) codexClientModelsResponse(clientVersion ...string) map[string]any {
 	version := ""

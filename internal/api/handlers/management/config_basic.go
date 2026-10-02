@@ -127,6 +127,9 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		return
 	}
 	// Validate config using LoadConfigOptional with optional=false to enforce parsing
+	if h.putConfigYAMLWithApply(c, body, cfg.Grouping.Enabled) {
+		return
+	}
 	tmpDir := filepath.Dir(h.configFilePath)
 	tmpFile, err := os.CreateTemp(tmpDir, "config-validate-*.yaml")
 	if err != nil {
@@ -190,13 +193,21 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 
 // Debug
 func (h *Handler) GetDebug(c *gin.Context) { c.JSON(200, gin.H{"debug": h.cfg.Debug}) }
-func (h *Handler) PutDebug(c *gin.Context) { h.updateBoolField(c, func(v bool) { h.cfg.Debug = v }) }
+func (h *Handler) PutDebug(c *gin.Context) {
+	if h.withConfigDraft(c, "PutDebug", (*Handler).PutDebug) {
+		return
+	}
+	h.updateBoolField(c, func(v bool) { h.cfg.Debug = v })
+}
 
 // UsageStatisticsEnabled
 func (h *Handler) GetUsageStatisticsEnabled(c *gin.Context) {
 	c.JSON(200, gin.H{"usage-statistics-enabled": h.cfg.UsageStatisticsEnabled})
 }
 func (h *Handler) PutUsageStatisticsEnabled(c *gin.Context) {
+	if h.withConfigDraft(c, "PutUsageStatisticsEnabled", (*Handler).PutUsageStatisticsEnabled) {
+		return
+	}
 	h.updateBoolField(c, func(v bool) { h.cfg.UsageStatisticsEnabled = v })
 }
 
@@ -205,6 +216,9 @@ func (h *Handler) GetLoggingToFile(c *gin.Context) {
 	c.JSON(200, gin.H{"logging-to-file": h.cfg.LoggingToFile})
 }
 func (h *Handler) PutLoggingToFile(c *gin.Context) {
+	if h.withConfigDraft(c, "PutLoggingToFile", (*Handler).PutLoggingToFile) {
+		return
+	}
 	h.updateBoolField(c, func(v bool) { h.cfg.LoggingToFile = v })
 }
 
@@ -213,6 +227,9 @@ func (h *Handler) GetLogsMaxTotalSizeMB(c *gin.Context) {
 	c.JSON(200, gin.H{"logs-max-total-size-mb": h.cfg.LogsMaxTotalSizeMB})
 }
 func (h *Handler) PutLogsMaxTotalSizeMB(c *gin.Context) {
+	if h.withConfigDraft(c, "PutLogsMaxTotalSizeMB", (*Handler).PutLogsMaxTotalSizeMB) {
+		return
+	}
 	var body struct {
 		Value *int `json:"value"`
 	}
@@ -233,6 +250,9 @@ func (h *Handler) GetErrorLogsMaxFiles(c *gin.Context) {
 	c.JSON(200, gin.H{"error-logs-max-files": h.cfg.ErrorLogsMaxFiles})
 }
 func (h *Handler) PutErrorLogsMaxFiles(c *gin.Context) {
+	if h.withConfigDraft(c, "PutErrorLogsMaxFiles", (*Handler).PutErrorLogsMaxFiles) {
+		return
+	}
 	var body struct {
 		Value *int `json:"value"`
 	}
@@ -251,6 +271,9 @@ func (h *Handler) PutErrorLogsMaxFiles(c *gin.Context) {
 // Request log
 func (h *Handler) GetRequestLog(c *gin.Context) { c.JSON(200, gin.H{"request-log": h.cfg.RequestLog}) }
 func (h *Handler) PutRequestLog(c *gin.Context) {
+	if h.withConfigDraft(c, "PutRequestLog", (*Handler).PutRequestLog) {
+		return
+	}
 	h.updateBoolField(c, func(v bool) { h.cfg.RequestLog = v })
 }
 
@@ -259,6 +282,9 @@ func (h *Handler) GetWebsocketAuth(c *gin.Context) {
 	c.JSON(200, gin.H{"ws-auth": h.cfg.WebsocketAuth})
 }
 func (h *Handler) PutWebsocketAuth(c *gin.Context) {
+	if h.withConfigDraft(c, "PutWebsocketAuth", (*Handler).PutWebsocketAuth) {
+		return
+	}
 	h.updateBoolField(c, func(v bool) { h.cfg.WebsocketAuth = v })
 }
 
@@ -267,6 +293,9 @@ func (h *Handler) GetRequestRetry(c *gin.Context) {
 	c.JSON(200, gin.H{"request-retry": h.cfg.RequestRetry})
 }
 func (h *Handler) PutRequestRetry(c *gin.Context) {
+	if h.withConfigDraft(c, "PutRequestRetry", (*Handler).PutRequestRetry) {
+		return
+	}
 	h.updateIntField(c, func(v int) { h.cfg.RequestRetry = v })
 }
 
@@ -275,6 +304,9 @@ func (h *Handler) GetMaxRetryCredentials(c *gin.Context) {
 	c.JSON(200, gin.H{"max-retry-credentials": h.cfg.MaxRetryCredentials})
 }
 func (h *Handler) PutMaxRetryCredentials(c *gin.Context) {
+	if h.withConfigDraft(c, "PutMaxRetryCredentials", (*Handler).PutMaxRetryCredentials) {
+		return
+	}
 	h.updateIntField(c, func(v int) { h.cfg.MaxRetryCredentials = v })
 }
 
@@ -283,6 +315,9 @@ func (h *Handler) GetMaxRetryInterval(c *gin.Context) {
 	c.JSON(200, gin.H{"max-retry-interval": h.cfg.MaxRetryInterval})
 }
 func (h *Handler) PutMaxRetryInterval(c *gin.Context) {
+	if h.withConfigDraft(c, "PutMaxRetryInterval", (*Handler).PutMaxRetryInterval) {
+		return
+	}
 	h.updateIntField(c, func(v int) { h.cfg.MaxRetryInterval = v })
 }
 
@@ -291,6 +326,9 @@ func (h *Handler) GetForceModelPrefix(c *gin.Context) {
 	c.JSON(200, gin.H{"force-model-prefix": h.cfg.ForceModelPrefix})
 }
 func (h *Handler) PutForceModelPrefix(c *gin.Context) {
+	if h.withConfigDraft(c, "PutForceModelPrefix", (*Handler).PutForceModelPrefix) {
+		return
+	}
 	h.updateBoolField(c, func(v bool) { h.cfg.ForceModelPrefix = v })
 }
 
@@ -318,6 +356,9 @@ func (h *Handler) GetRoutingStrategy(c *gin.Context) {
 	c.JSON(200, gin.H{"strategy": strategy})
 }
 func (h *Handler) PutRoutingStrategy(c *gin.Context) {
+	if h.withConfigDraft(c, "PutRoutingStrategy", (*Handler).PutRoutingStrategy) {
+		return
+	}
 	var body struct {
 		Value *string `json:"value"`
 	}
@@ -337,9 +378,15 @@ func (h *Handler) PutRoutingStrategy(c *gin.Context) {
 // Proxy URL
 func (h *Handler) GetProxyURL(c *gin.Context) { c.JSON(200, gin.H{"proxy-url": h.cfg.ProxyURL}) }
 func (h *Handler) PutProxyURL(c *gin.Context) {
+	if h.withConfigDraft(c, "PutProxyURL", (*Handler).PutProxyURL) {
+		return
+	}
 	h.updateStringField(c, func(v string) { h.cfg.ProxyURL = v })
 }
 func (h *Handler) DeleteProxyURL(c *gin.Context) {
+	if h.withConfigDraft(c, "DeleteProxyURL", (*Handler).DeleteProxyURL) {
+		return
+	}
 	h.cfg.ProxyURL = ""
 	h.persist(c)
 }

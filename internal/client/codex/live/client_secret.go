@@ -269,6 +269,14 @@ func (h *Handler) createClientSecret(c *gin.Context, session json.RawMessage, ex
 	issuerProvider, _ := c.Get("accessProvider")
 	issuerPrincipalValue, _ := issuerPrincipal.(string)
 	issuerProviderValue, _ := issuerProvider.(string)
+	if h.authManager != nil && h.authManager.CredentialAccessPolicyEnabled() {
+		principal, errAccess := h.groupingClientSecretIssuer(c.Request.Context())
+		if errAccess != nil {
+			writeSelectionError(c, errAccess)
+			return
+		}
+		issuerPrincipalValue, issuerProviderValue = principal.Subject, principal.Provider
+	}
 	token, authorization, expiresAt, errCreate := h.clientSecrets.create(upstreamSession, lifetime, issuerPrincipalValue, issuerProviderValue)
 	if errCreate != nil {
 		if errors.Is(errCreate, errClientSecretCapacity) {

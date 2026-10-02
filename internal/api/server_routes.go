@@ -659,7 +659,16 @@ func (s *Server) handleGrokModels(c *gin.Context) {
 		}
 		models = grokModelsFromHomeEntries(entries)
 	} else {
-		models = grokModelsFromRegistryInfos(registry.GetGlobalRegistry().GetAvailableModelInfos())
+		if s.handlers != nil && s.handlers.CredentialGroupingEnabled() {
+			catalog, err := s.handlers.RequestModelCatalog(c.Request.Context(), "openai")
+			if err != nil {
+				s.handlers.WriteCredentialAccessError(c, err)
+				return
+			}
+			models = grokModelsFromRegistryInfos(catalog.ModelInfos())
+		} else {
+			models = grokModelsFromRegistryInfos(registry.GetGlobalRegistry().GetAvailableModelInfos())
+		}
 	}
 	s.writeModelListResponse(c, "openai", grokbuild.BuildResponse(models))
 }

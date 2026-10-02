@@ -2,14 +2,14 @@ package pluginhost
 
 import (
 	"context"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
+
+	"github.com/google/uuid"
+	log "github.com/sirupsen/logrus"
 )
 
 type callbackContextRegistry struct {
-	next     atomic.Uint64
 	mu       sync.RWMutex
 	contexts map[string]callbackContextEntry
 }
@@ -18,6 +18,7 @@ type callbackContextEntry struct {
 	ctx      context.Context
 	pluginID string
 	cleanup  []func()
+	denial   *callbackAccessDenial
 }
 
 func newCallbackContextRegistry() *callbackContextRegistry {
@@ -33,9 +34,14 @@ func (r *callbackContextRegistry) open(ctx context.Context, pluginID string) (st
 	}
 	pluginID = strings.TrimSpace(pluginID)
 	ctx = withHostCallbackPluginID(ctx, pluginID)
-	id := strconv.FormatUint(r.next.Add(1), 10)
+	identifier, errRandom := uuid.NewRandom()
+	if errRandom != nil {
+		log.Errorf("pluginhost: create callback context identifier: %v", errRandom)
+		return "", func() {}
+	}
+	id := identifier.String()
 	r.mu.Lock()
-	r.contexts[id] = callbackContextEntry{ctx: ctx, pluginID: pluginID}
+	r.contexts[id] = callbackContextEntry{ctx: ctx, pluginID: pluginID, denial: newCallbackAccessDenial()}
 	r.mu.Unlock()
 
 	var once sync.Once

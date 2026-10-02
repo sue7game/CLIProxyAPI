@@ -19,7 +19,11 @@ func (h *Host) callHostAuthRequest(ctx context.Context, request []byte) ([]byte,
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode host auth request: %w", errUnmarshal)
 	}
-	ctx = h.resolveCallbackContext(req.HostCallbackID, ctx)
+	var errContext error
+	ctx, errContext = h.resolveGroupingCallbackContext(ctx, req.HostCallbackID)
+	if errContext != nil {
+		return nil, errContext
+	}
 	if errValidate := validateHostAuthRequest(req); errValidate != nil {
 		return nil, errValidate
 	}
@@ -27,6 +31,9 @@ func (h *Host) callHostAuthRequest(ctx context.Context, request []byte) ([]byte,
 	auth, errAuth := h.authByIndex(req.AuthIndex)
 	if errAuth != nil {
 		return nil, errAuth
+	}
+	if errAccess := h.authorizeHostCredential(ctx, auth); errAccess != nil {
+		return nil, errAccess
 	}
 	headers := cloneHeader(req.Headers)
 	token, auth, errHeaders := h.replaceHostAuthTokenHeaders(ctx, auth, headers)
@@ -37,6 +44,9 @@ func (h *Host) callHostAuthRequest(ctx context.Context, request []byte) ([]byte,
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	if method == "" {
 		method = http.MethodGet
+	}
+	if errAccess := h.authorizeHostCredential(ctx, auth); errAccess != nil {
+		return nil, errAccess
 	}
 	resp, errDo := h.newAuthHTTPClient(auth, auth.Provider, token).Do(ctx, pluginapi.HTTPRequest{
 		Method:  method,

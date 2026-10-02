@@ -3,15 +3,12 @@ package pluginhost
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"sync"
-	"sync/atomic"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 )
 
 type modelStreamBridge struct {
-	next    atomic.Uint64
 	mu      sync.Mutex
 	streams map[string]modelStreamEntry
 }
@@ -33,7 +30,13 @@ func (b *modelStreamBridge) open(ownerCallbackID string, chunks <-chan handlers.
 		}
 		return ""
 	}
-	id := strconv.FormatUint(b.next.Add(1), 10)
+	id := newGroupingBridgeID()
+	if id == "" {
+		if cancel != nil {
+			cancel()
+		}
+		return ""
+	}
 	b.mu.Lock()
 	b.streams[id] = modelStreamEntry{
 		ownerCallbackID: ownerCallbackID,

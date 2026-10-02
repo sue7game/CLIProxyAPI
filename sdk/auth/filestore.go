@@ -15,6 +15,7 @@ import (
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	log "github.com/sirupsen/logrus"
 )
 
 // PluginAuthParser parses auth JSON owned by plugin providers.
@@ -100,6 +101,9 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err = preserveFileGroupingID(path, auth); err != nil {
+		return "", fmt.Errorf("auth filestore: %w", err)
+	}
 
 	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("auth filestore: create dir failed: %w", err)
@@ -187,6 +191,7 @@ func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error)
 		}
 		auths, errReadAuths := s.readAuthFiles(path, dir)
 		if errReadAuths != nil {
+			log.WithError(errReadAuths).WithField("file", filepath.Base(path)).Warn("skipping unreadable auth file")
 			return nil
 		}
 		if len(auths) > 0 {
@@ -263,6 +268,9 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 			auths = compactPluginAuths(auths)
 			if len(auths) == 0 {
 				return nil, nil
+			}
+			if errGrouping := ApplyFileGroupingIDs(auths, metadata, false); errGrouping != nil {
+				return nil, errGrouping
 			}
 			disabled, _ := metadata["disabled"].(bool)
 			for index, auth := range auths {
@@ -347,6 +355,9 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 		UpdatedAt:        info.ModTime(),
 		LastRefreshedAt:  time.Time{},
 		NextRefreshAfter: time.Time{},
+	}
+	if errGrouping := ApplyFileGroupingIDs([]*cliproxyauth.Auth{auth}, metadata, false); errGrouping != nil {
+		return nil, errGrouping
 	}
 	if email, ok := metadata["email"].(string); ok && email != "" {
 		auth.Attributes["email"] = email

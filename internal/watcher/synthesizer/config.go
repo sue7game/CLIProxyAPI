@@ -38,8 +38,18 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	if ctx == nil || ctx.Config == nil {
 		return out, nil
 	}
+	if ctx.IDGenerator == nil {
+		local := *ctx
+		local.IDGenerator = NewStableIDGenerator()
+		ctx = &local
+	}
 	if errValidate := ctx.Config.ValidateCredentialWeights(); errValidate != nil {
 		return nil, fmt.Errorf("synthesize config API key auths: %w", errValidate)
+	}
+	if ctx.Config.Grouping.Enabled {
+		if errValidate := config.ValidateGroupingCredentialIDs(ctx.Config); errValidate != nil {
+			return nil, fmt.Errorf("synthesize config API key auths: %w", errValidate)
+		}
 	}
 
 	// Gemini API Keys
@@ -105,6 +115,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 			attrs["priority"] = strconv.Itoa(entry.Priority)
 		}
 		addWeightToAttrs(entry.Weight, attrs)
+		addGroupingIDToAttrs(entry.GroupingID, attrs)
 		if base != "" {
 			attrs["base_url"] = base
 		}
@@ -167,6 +178,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			attrs["priority"] = strconv.Itoa(ck.Priority)
 		}
 		addWeightToAttrs(ck.Weight, attrs)
+		addGroupingIDToAttrs(ck.GroupingID, attrs)
 		if base != "" {
 			attrs["base_url"] = base
 		}
@@ -252,6 +264,7 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 		if baseURL != "" {
 			attrs["base_url"] = baseURL
 		}
+		addGroupingIDToAttrs(entry.GroupingID, attrs)
 		if entry.Websockets {
 			attrs["websockets"] = "true"
 		}
@@ -332,6 +345,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
 			addWeightToAttrs(entry.Weight, attrs)
+			addGroupingIDToAttrs(entry.GroupingID, attrs)
 			if key != "" {
 				attrs["api_key"] = key
 			}
@@ -380,6 +394,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
 				attrs["models_hash"] = hash
 			}
+			addGroupingIDToAttrs(compat.GroupingID, attrs)
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			a := &coreauth.Auth{
 				ID:         id,
@@ -428,6 +443,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			attrs["priority"] = strconv.Itoa(compat.Priority)
 		}
 		addWeightToAttrs(compat.Weight, attrs)
+		addGroupingIDToAttrs(compat.GroupingID, attrs)
 		if key != "" {
 			attrs["api_key"] = key
 		}

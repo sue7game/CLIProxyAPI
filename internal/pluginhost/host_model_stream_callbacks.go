@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -24,7 +25,10 @@ func (h *Host) callHostModelExecuteStream(ctx context.Context, request []byte) (
 		return nil, fmt.Errorf("host model executor is unavailable")
 	}
 	skipPluginID := h.callbackCallerPluginID(ctx, req.HostCallbackID)
-	callbackCtx := h.resolveCallbackContext(req.HostCallbackID, ctx)
+	callbackCtx, errContext := h.resolveGroupingCallbackContext(ctx, req.HostCallbackID)
+	if errContext != nil {
+		return nil, errContext
+	}
 	if callbackCtx == nil {
 		callbackCtx = context.Background()
 	}
@@ -62,6 +66,9 @@ func (h *Host) callHostModelStreamRead(ctx context.Context, request []byte) ([]b
 	}
 	if h == nil || h.modelStreams == nil {
 		return nil, fmt.Errorf("host model stream bridge is unavailable")
+	}
+	if errAccess := h.authorizeGroupedStream(ctx, pluginabi.MethodHostModelStreamRead, req.StreamID); errAccess != nil {
+		return nil, errAccess
 	}
 	chunk, done, errRead := h.modelStreams.read(ctx, req.StreamID)
 	if errRead != nil {

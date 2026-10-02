@@ -623,6 +623,7 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 	rawResponseHeaders := http.Header{
 		"Content-Type": []string{"application/json; charset=utf-8"},
 	}
+	scopedOriginal := cloneBytes(body)
 
 	host := h.interceptorHost()
 	if host != nil {
@@ -660,6 +661,17 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 		lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	}
 
+	if h.CredentialGroupingEnabled() {
+		var errScope error
+		body, errScope = restrictModelListResponse(scopedOriginal, body)
+		if errScope != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "scoped model catalog unavailable"})
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		c.Writer.Header().Del("Content-Length")
+		c.Writer.Header().Del("ETag")
+	}
 	if c.Writer.Header().Get("Content-Type") == "" {
 		c.Header("Content-Type", "application/json; charset=utf-8")
 	}

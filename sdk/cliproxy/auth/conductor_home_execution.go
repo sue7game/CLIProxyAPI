@@ -64,6 +64,9 @@ func (m *Manager) executeHome(ctx context.Context, providers []string, req clipr
 }
 
 func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, countTokens bool, maxRetryCredentials int, homeRetryLimit *int, retryRounds ...int) (cliproxyexecutor.Response, error) {
+	if m.CredentialAccessPolicyEnabled() {
+		return cliproxyexecutor.Response{}, accessPolicyUnavailable("credential access policy is unavailable in Home mode")
+	}
 	retryRound := 0
 	if len(retryRounds) > 0 {
 		retryRound = retryRounds[0]
@@ -155,6 +158,11 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 		}
 		preparedAuth, errPrepare := m.prepareHomeRequestAuth(execCtx, selection.Executor, selection)
 		if errPrepare != nil {
+			if isCredentialAccessError(errPrepare) {
+				releaseAttempt()
+				selection.End("credential_access_denied")
+				return cliproxyexecutor.Response{}, errPrepare
+			}
 			stateModel := m.selectionModelKeyForAuth(auth, routeModel)
 			if stateModel == "" {
 				stateModel = canonicalModelKey(routeModel)
@@ -239,6 +247,11 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 				return selection.Executor.Execute(execCtx, preparedAuth, execReq, execOpts)
 			}
 			startHomeExec := time.Now()
+			if errAccess := m.AuthorizeCredentialUse(execCtx, preparedAuth); errAccess != nil {
+				releaseAttempt()
+				selection.End("credential_access_denied")
+				return cliproxyexecutor.Response{}, errAccess
+			}
 			response, errExecute = execute()
 			errExecute = markUpstreamExecutionAttemptFromContext(execCtx, errExecute)
 			durationHomeExec := time.Since(startHomeExec)

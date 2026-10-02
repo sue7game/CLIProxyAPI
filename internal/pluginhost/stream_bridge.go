@@ -4,15 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"sync"
-	"sync/atomic"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 type streamBridge struct {
-	next    atomic.Uint64
 	mu      sync.Mutex
 	streams map[string]*streamBridgeStream
 }
@@ -22,14 +19,15 @@ const streamBridgeBufferSize = 16
 var errStreamBridgeClosed = errors.New("stream is not open")
 
 type streamBridgeStream struct {
-	chunks    chan pluginapi.ExecutorStreamChunk
-	emits     chan streamBridgeEmit
-	closes    chan streamBridgeClose
-	closed    chan struct{}
-	finished  chan struct{}
-	abort     chan struct{}
-	closeOnce sync.Once
-	abortOnce sync.Once
+	ownerCallbackID string
+	chunks          chan pluginapi.ExecutorStreamChunk
+	emits           chan streamBridgeEmit
+	closes          chan streamBridgeClose
+	closed          chan struct{}
+	finished        chan struct{}
+	abort           chan struct{}
+	closeOnce       sync.Once
+	abortOnce       sync.Once
 }
 
 type streamBridgeEmit struct {
@@ -181,13 +179,18 @@ func (s *streamBridgeStream) close(errorMessage string) {
 }
 
 func (b *streamBridge) open(ctx context.Context) (string, <-chan pluginapi.ExecutorStreamChunk, func()) {
-	if b == nil {
+	return b.openOwned(ctx, "")
+}
+
+func (b *streamBridge) openOwned(ctx context.Context, ownerCallbackID string) (string, <-chan pluginapi.ExecutorStreamChunk, func()) {
+	id := newGroupingBridgeID()
+	if b == nil || id == "" {
 		chunks := make(chan pluginapi.ExecutorStreamChunk)
 		close(chunks)
 		return "", chunks, func() {}
 	}
-	id := strconv.FormatUint(b.next.Add(1), 10)
 	stream := newStreamBridgeStream()
+	stream.ownerCallbackID = ownerCallbackID
 	b.mu.Lock()
 	b.streams[id] = stream
 	b.mu.Unlock()
@@ -202,8 +205,11 @@ func (b *streamBridge) open(ctx context.Context) (string, <-chan pluginapi.Execu
 	if ctx != nil && ctx.Done() != nil {
 		// Abort streams canceled before ExecuteStream can install cleanupWhenStreamDone.
 		go func() {
-			<-ctx.Done()
-			cleanup()
+			select {
+			case <-ctx.Done():
+				cleanup()
+			case <-stream.finished:
+			}
 		}()
 	}
 	return id, stream.chunks, cleanup

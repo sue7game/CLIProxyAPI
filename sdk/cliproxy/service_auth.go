@@ -165,6 +165,19 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 	}
 
 	registrationCtx := coreauth.WithDeferredAPIKeyModelAliasRebuild(ctx)
+	if s.grouping != nil {
+		if err := s.grouping.reconcileRuntimeSources(ctx); err != nil && s.grouping.enabled.Load() {
+			log.WithError(err).Error("grouping refused credential publication because source validation failed")
+			return
+		}
+		var err error
+		if updates, err = s.authoritativeConfigAuthUpdates(cfg, updates); err != nil {
+			s.grouping.sourcesUnavailable.Store(true)
+			s.grouping.notify()
+			log.WithError(err).Error("grouping refused stale configuration credential publication")
+			return
+		}
+	}
 	tasks := make([]modelRegistrationTask, 0, len(updates))
 	needsAliasRebuild := false
 	for _, update := range updates {
@@ -179,15 +192,13 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 			}
 			needsAliasRebuild = true
 			authForRegistration := auth
-			expectedGeneration := authForRegistration.Generation
-			expectedDisabled := authForRegistration.Disabled
 			authID := authForRegistration.ID
 			wait := startedWaitByID[authID]
 			tasks = append(tasks, modelRegistrationTask{
 				phase:    modelRegistrationPhase(authForRegistration),
 				category: modelRegistrationCategory(authForRegistration),
 				run: func(compatCache *openAICompatibilityRegistrationCache) {
-					if s.shouldSkipModelRegistration(authID, expectedGeneration, expectedDisabled) {
+					if s.shouldSkipModelRegistration(authForRegistration) {
 						return
 					}
 					s.completeModelRegistrationForAuthWithCache(registrationCtx, authForRegistration, compatCache)
@@ -353,6 +364,7 @@ func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth 
 		return nil
 	}
 	auth = auth.Clone()
+	s.retireReplacedConfigAuth(ctx, auth)
 	s.ensureExecutorsForAuthWithContext(ctx, auth, false)
 
 	// IMPORTANT: Update coreManager FIRST, before model registration.
@@ -459,18 +471,23 @@ func waitAuthRegistrations(waits []chan struct{}) {
 	}
 }
 
-func (s *Service) shouldSkipModelRegistration(authID string, expectedGeneration uint64, expectedDisabled bool) bool {
-	if s == nil || s.coreManager == nil || strings.TrimSpace(authID) == "" {
+func (s *Service) shouldSkipModelRegistration(expected *coreauth.Auth) bool {
+	if s == nil || s.coreManager == nil || expected == nil || strings.TrimSpace(expected.ID) == "" {
 		return true
 	}
-	current, ok := s.coreManager.GetByID(authID)
+	current, ok := s.coreManager.GetByID(expected.ID)
 	if !ok || current == nil {
-		return !expectedDisabled
+		return !expected.Disabled
 	}
-	if expectedGeneration > 0 && current.Generation > expectedGeneration {
+	if expected.Generation > 0 && current.Generation > expected.Generation {
 		return true
 	}
-	return current.Disabled != expectedDisabled
+	if s.grouping != nil && s.usesAuthoritativeConfigAuths(s.grouping.current.Load()) && coreauth.IsConfigAPIKeyAuth(expected) {
+		if current.Attributes["grouping_id"] != expected.Attributes["grouping_id"] || current.RegistrationEpoch != expected.RegistrationEpoch {
+			return true
+		}
+	}
+	return current.Disabled != expected.Disabled
 }
 
 // isStaleCoreAuth reports whether an incoming auth update is older than the current

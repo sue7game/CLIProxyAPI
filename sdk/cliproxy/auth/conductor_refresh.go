@@ -471,25 +471,31 @@ func (m *Manager) RefreshHomeSelectionAfterUnauthorized(_ context.Context, selec
 
 // tryRefreshAfterUnauthorized refreshes local OAuth credentials once after a
 // 401 so the current auth can be retried before fallback/suspend.
-func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, execErr error, alreadyTried bool) (*Auth, bool) {
+func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, execErr error, alreadyTried bool) (*Auth, bool, error) {
+	if isCredentialAccessError(execErr) {
+		return auth, false, execErr
+	}
 	if m == nil || auth == nil || alreadyTried || execErr == nil {
-		return auth, false
+		return auth, false, nil
 	}
 	// Request-scoped failures describe this request, not stale credentials.
 	// Refreshing would turn a direct error response into an implicit retry.
 	if isRequestScopedError(execErr) {
-		return auth, false
+		return auth, false, nil
 	}
 	if !isUnauthorizedError(execErr) || !authHasRefreshCredential(auth) {
-		return auth, false
+		return auth, false, nil
 	}
 	log.Debugf("unauthorized response for %s (%s), refreshing credentials before fallback", auth.Provider, auth.ID)
 	refreshed, errRefresh := m.refreshAuthForRequest(ctx, auth.ID, authAccessToken(auth))
+	if isCredentialAccessError(errRefresh) {
+		return auth, false, errRefresh
+	}
 	if errRefresh != nil || refreshed == nil {
 		log.Debugf("credential refresh before fallback failed for %s (%s): %v", auth.Provider, auth.ID, errRefresh)
-		return auth, false
+		return auth, false, nil
 	}
-	return refreshed, true
+	return refreshed, true, nil
 }
 
 func (m *Manager) refreshAuth(ctx context.Context, id string) {
@@ -509,6 +515,11 @@ func (m *Manager) RefreshAuthForRequest(ctx context.Context, id, failedAccessTok
 func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessToken string) (*Auth, error) {
 	if m == nil {
 		return nil, errors.New("auth manager is nil")
+	}
+	var errAccess error
+	ctx, errAccess = m.beginCredentialAccess(ctx)
+	if errAccess != nil {
+		return nil, errAccess
 	}
 	ctx = cliproxyexecutor.WithoutRequestProxyURL(ctx)
 	if ctx == nil {
@@ -535,8 +546,12 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		// Use the same effective provider key as request execution so OpenAI-compat
 		// auths registered under namespaced keys still resolve for refresh.
 		exec, _ = m.executorLocked(executorKeyFromAuth(auth))
+		auth = auth.Clone()
 	}
 	m.mu.RUnlock()
+	if errAccess = m.AuthorizeCredentialUse(ctx, auth); errAccess != nil {
+		return nil, errAccess
+	}
 	if auth == nil || exec == nil {
 		return nil, errors.New("auth or executor not found")
 	}
@@ -550,6 +565,9 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 
 	base := auth.Clone()
 	updated, err := exec.Refresh(ctx, base.Clone())
+	if isCredentialAccessError(err) {
+		return nil, err
+	}
 	if err != nil && errors.Is(err, context.Canceled) {
 		log.Debugf("refresh canceled for %s, %s", auth.Provider, auth.ID)
 		return nil, err
@@ -642,6 +660,9 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	}
 	if targetAuth != nil && len(projections) > 0 {
 		registry.GetGlobalRegistry().ApplyClientModelProjections(id, regEpoch, targetAuth.Generation, projections)
+	}
+	if errAccess = m.AuthorizeCredentialUse(ctx, saved); errAccess != nil {
+		return nil, errAccess
 	}
 	return saved.Clone(), nil
 }

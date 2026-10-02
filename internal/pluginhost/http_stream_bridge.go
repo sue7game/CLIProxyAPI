@@ -3,22 +3,20 @@ package pluginhost
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"sync"
-	"sync/atomic"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 type hostHTTPStreamBridge struct {
-	next    atomic.Uint64
 	mu      sync.Mutex
 	streams map[string]hostHTTPStreamEntry
 }
 
 type hostHTTPStreamEntry struct {
-	chunks <-chan pluginapi.HTTPStreamChunk
-	cancel context.CancelFunc
+	ownerCallbackID string
+	chunks          <-chan pluginapi.HTTPStreamChunk
+	cancel          context.CancelFunc
 }
 
 func newHostHTTPStreamBridge() *hostHTTPStreamBridge {
@@ -26,15 +24,25 @@ func newHostHTTPStreamBridge() *hostHTTPStreamBridge {
 }
 
 func (b *hostHTTPStreamBridge) open(chunks <-chan pluginapi.HTTPStreamChunk, cancel context.CancelFunc) string {
+	return b.openOwned(chunks, cancel, "")
+}
+
+func (b *hostHTTPStreamBridge) openOwned(chunks <-chan pluginapi.HTTPStreamChunk, cancel context.CancelFunc, ownerCallbackID string) string {
 	if b == nil || chunks == nil {
 		if cancel != nil {
 			cancel()
 		}
 		return ""
 	}
-	id := strconv.FormatUint(b.next.Add(1), 10)
+	id := newGroupingBridgeID()
+	if id == "" {
+		if cancel != nil {
+			cancel()
+		}
+		return ""
+	}
 	b.mu.Lock()
-	b.streams[id] = hostHTTPStreamEntry{chunks: chunks, cancel: cancel}
+	b.streams[id] = hostHTTPStreamEntry{chunks: chunks, cancel: cancel, ownerCallbackID: ownerCallbackID}
 	b.mu.Unlock()
 	return id
 }

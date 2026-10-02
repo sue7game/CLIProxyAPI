@@ -45,6 +45,7 @@ var (
 type liveSession struct {
 	callID                string
 	authID                string
+	credential            *auth.Auth
 	model                 string
 	sessionID             string
 	parentSessionID       string
@@ -420,6 +421,24 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 		defer releaseAttempt()
 	}
 	logging.SetGinCPATraceID(c, selected.EnsureIndex())
+	if h.authManager.CredentialAccessPolicyEnabled() {
+		if _, errAccess := handlers.AuthorizeRetainedCredential(ctx, h.authManager, session.credential); errAccess != nil {
+			writeSelectionError(c, errAccess)
+			return
+		}
+	}
+	accessWatch, errAccess := h.watchCredentialAccess(ctx, selected)
+	if errAccess != nil {
+		writeSelectionError(c, errAccess)
+		return
+	}
+	defer func() { _ = accessWatch.close() }()
+	ctx, stopAccessRequest := accessWatch.requestContext(ctx)
+	defer stopAccessRequest()
+	accessWatch.resources.add(func() error {
+		h.sessions.complete(session, "credential_access_revoked")
+		return nil
+	})
 
 	upstreamURL := buildSidebandURL(h.sidebandAPIBaseURL, style, callID)
 	upstreamHTTPURL := websocketHTTPURL(upstreamURL)
@@ -476,14 +495,18 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 	}
 
 	closeUpstream := websocketCloseFunc("upstream", upstream)
+	defer func() { _ = closeUpstream() }()
+	accessWatch.resources.add(closeUpstream)
+	if errAccess = accessWatch.currentError(); errAccess != nil {
+		writeSelectionError(c, errAccess)
+		return
+	}
 	if selection != nil {
 		if errBind := selection.Bind(closeUpstream); errBind != nil {
 			consumeSession = true
 			writeLiveError(c, http.StatusServiceUnavailable, errBind.Error())
 			return
 		}
-	} else {
-		defer func() { _ = closeUpstream() }()
 	}
 
 	upgradeHeaders := make(http.Header)
@@ -496,6 +519,7 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 		return
 	}
 	closeDownstream := websocketCloseFunc("downstream", downstream)
+	accessWatch.resources.add(closeDownstream)
 	if selection != nil {
 		if errBind := selection.Bind(closeDownstream); errBind != nil {
 			consumeSession = true
@@ -509,7 +533,7 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 	}
 	consumeSession = true
 
-	if errRelay := relayWebsockets(downstream, upstream); errRelay != nil && !isNormalWebsocketClose(errRelay) {
+	if errRelay := relayWebsockets(downstream, upstream, accessWatch.currentError); errRelay != nil && !isNormalWebsocketClose(errRelay) {
 		helps.RecordAPIWebsocketError(ctx, runtimeConfig, "relay", errRelay)
 		log.WithError(errRelay).Debug("codex live sideband relay closed")
 	}
@@ -632,10 +656,10 @@ func websocketCloseFunc(name string, conn *websocket.Conn) func() error {
 	}
 }
 
-func relayWebsockets(downstream, upstream *websocket.Conn) error {
+func relayWebsockets(downstream, upstream *websocket.Conn, authorize ...func() error) error {
 	results := make(chan error, 2)
-	go func() { results <- copyWebsocket(upstream, downstream) }()
-	go func() { results <- copyWebsocket(downstream, upstream) }()
+	go func() { results <- copyWebsocket(upstream, downstream, authorize...) }()
+	go func() { results <- copyWebsocket(downstream, upstream, authorize...) }()
 
 	firstErr := <-results
 	closeCode, closeReason := websocketCloseDetails(firstErr)
@@ -648,11 +672,18 @@ func relayWebsockets(downstream, upstream *websocket.Conn) error {
 	return firstErr
 }
 
-func copyWebsocket(destination, source *websocket.Conn) error {
+func copyWebsocket(destination, source *websocket.Conn, authorize ...func() error) error {
 	for {
 		messageType, reader, errReader := source.NextReader()
 		if errReader != nil {
 			return errReader
+		}
+		for _, check := range authorize {
+			if check != nil {
+				if errAccess := check(); errAccess != nil {
+					return errAccess
+				}
+			}
 		}
 		writer, errWriter := destination.NextWriter(messageType)
 		if errWriter != nil {

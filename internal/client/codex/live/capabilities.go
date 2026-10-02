@@ -61,6 +61,12 @@ func (h *Handler) HandleHangup(c *gin.Context) {
 	}
 
 	ctx := context.WithValue(c.Request.Context(), "gin", c)
+	if h.authManager.CredentialAccessPolicyEnabled() {
+		if _, errAccess := handlers.AuthorizeRetainedCredential(ctx, h.authManager, session.credential); errAccess != nil {
+			writeSelectionError(c, errAccess)
+			return
+		}
+	}
 	ctx = handlers.EnrichContextWithSessionHierarchy(ctx, liveSelectionHeaders(c), nil, map[string]any{
 		coreexecutor.ExecutionSessionMetadataKey: callID,
 	})

@@ -161,6 +161,9 @@ func (c *hostHTTPClient) doHTTP(ctx context.Context, req pluginapi.HTTPRequest) 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if errAccess := c.host.authorizeHostHTTP(ctx, c.auth); errAccess != nil {
+		return nil, nil, nil, errAccess
+	}
 	cfg := c.host.currentRuntimeConfig()
 	method := req.Method
 	if method == "" {
@@ -179,7 +182,7 @@ func (c *hostHTTPClient) doHTTP(ctx context.Context, req pluginapi.HTTPRequest) 
 	if client == nil {
 		client = &http.Client{}
 	}
-	cliproxyexecutor.MarkUpstreamAttempt(ctx)
+	client = c.withCredentialAccessTransport(client)
 	resp, errDo := client.Do(httpReq)
 	if errDo != nil {
 		if cleanup != nil {

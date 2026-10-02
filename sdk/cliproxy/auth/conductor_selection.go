@@ -76,6 +76,7 @@ type requiredAuthKindContextKey struct{}
 type credentialPolicyContextKey struct{}
 
 type authSelectionEligibility struct {
+	accessScope      CredentialAccessScope
 	requiredKind     string
 	credentialPolicy string
 	disallowFreeAuth bool
@@ -100,6 +101,9 @@ func credentialPolicyFromContext(ctx context.Context) string {
 func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options) authSelectionEligibility {
 	eligibility := authSelectionEligibility{disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata)}
 	if ctx != nil {
+		if attempt := credentialAccessAttemptFromContext(ctx); attempt != nil {
+			eligibility.accessScope = attempt.scope
+		}
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
 	}
@@ -108,6 +112,9 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 
 func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if auth == nil {
+		return false
+	}
+	if e.accessScope != nil && !e.accessScope.Allows(auth) {
 		return false
 	}
 	if e.requiredKind != "" && auth.AuthKind() != e.requiredKind {
@@ -1333,6 +1340,9 @@ func (m *Manager) shouldRetryAfterErrorWithHomeRetryLimit(ctx context.Context, o
 }
 
 func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts cliproxyexecutor.Options, err error, attempt int, providers []string, model string, maxWait time.Duration, homeRetryLimit int, defaultRequestRetry int, attempted map[string]struct{}) (time.Duration, bool) {
+	if isCredentialAccessError(err) {
+		return 0, false
+	}
 	if err == nil {
 		return 0, false
 	}
@@ -1718,6 +1728,11 @@ func (m *Manager) routeAwareSelectionRequired(auth *Auth, routeModel string) boo
 }
 
 func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
+	var errAccess error
+	ctx, errAccess = m.beginCredentialAccess(ctx)
+	if errAccess != nil {
+		return nil, nil, errAccess
+	}
 	if m.HomeEnabled() {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
@@ -1797,6 +1812,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	if selected == nil {
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+	}
+	if errAccess := m.AuthorizeCredentialUse(ctx, selected); errAccess != nil {
+		return nil, nil, errAccess
 	}
 	authCopy := selected.Clone()
 	if !selected.indexAssigned {
@@ -1879,6 +1897,11 @@ func (m *Manager) SelectAuthWithCredentialPolicy(ctx context.Context, provider, 
 
 // SelectHomeAuthWithCredentialPolicy selects a policy-constrained Home dispatch while retaining its execution scope.
 func (m *Manager) SelectHomeAuthWithCredentialPolicy(ctx context.Context, provider, model, policy string, opts cliproxyexecutor.Options) (*HomeDispatchSelection, error) {
+	var errAccess error
+	ctx, errAccess = m.beginCredentialAccess(ctx)
+	if errAccess != nil {
+		return nil, errAccess
+	}
 	policy = normalizeCredentialPolicy(policy)
 	if policy == "" {
 		return nil, &Error{Code: "invalid_credential_policy", Message: "credential policy is invalid", HTTPStatus: http.StatusBadRequest}
@@ -1929,6 +1952,11 @@ func (m *Manager) SelectHomeAuthWithCredentialPolicy(ctx context.Context, provid
 
 // SelectHomeAuthByKind selects a Home dispatch while retaining its execution scope.
 func (m *Manager) SelectHomeAuthByKind(ctx context.Context, provider string, model string, requiredKind string, opts cliproxyexecutor.Options) (*HomeDispatchSelection, error) {
+	var errAccess error
+	ctx, errAccess = m.beginCredentialAccess(ctx)
+	if errAccess != nil {
+		return nil, errAccess
+	}
 	requiredKind = normalizeAuthKind(requiredKind)
 	if requiredKind == "" {
 		return nil, &Error{Code: "invalid_auth_kind", Message: "required auth kind is invalid", HTTPStatus: http.StatusBadRequest}
@@ -1976,6 +2004,11 @@ func (m *Manager) SelectHomeAuthByKind(ctx context.Context, provider string, mod
 }
 
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
+	var errAccess error
+	ctx, errAccess = m.beginCredentialAccess(ctx)
+	if errAccess != nil {
+		return nil, nil, errAccess
+	}
 	opts.EnsureMetadata()
 	if m.HomeEnabled() {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
@@ -2024,6 +2057,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	if selected == nil {
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
+	if errAccess := m.AuthorizeCredentialUse(ctx, selected); errAccess != nil {
+		return nil, nil, errAccess
+	}
 	authCopy := selected.Clone()
 	if !selected.indexAssigned {
 		m.mu.Lock()
@@ -2037,6 +2073,11 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 }
 
 func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
+	var errAccess error
+	ctx, errAccess = m.beginCredentialAccess(ctx)
+	if errAccess != nil {
+		return nil, nil, "", errAccess
+	}
 	if m.HomeEnabled() {
 		return m.pickNextViaHome(ctx, model, opts, tried)
 	}
@@ -2132,6 +2173,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	if selected == nil {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
+	if errAccess := m.AuthorizeCredentialUse(ctx, selected); errAccess != nil {
+		return nil, nil, "", errAccess
+	}
 	providerKey := executorKeyFromAuth(selected)
 	executor, okExecutor := m.Executor(providerKey)
 	if !okExecutor {
@@ -2150,6 +2194,11 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 }
 
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
+	var errAccess error
+	ctx, errAccess = m.beginCredentialAccess(ctx)
+	if errAccess != nil {
+		return nil, nil, "", errAccess
+	}
 	opts.EnsureMetadata()
 	if m.HomeEnabled() {
 		return m.pickNextViaHome(ctx, model, opts, tried)
@@ -2219,6 +2268,9 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	}
 	if selected == nil {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+	}
+	if errAccess := m.AuthorizeCredentialUse(ctx, selected); errAccess != nil {
+		return nil, nil, "", errAccess
 	}
 	executor, okExecutor := m.Executor(providerKey)
 	if !okExecutor {

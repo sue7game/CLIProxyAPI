@@ -13,6 +13,9 @@ import (
 //
 // Example services: zenmux.ai and similar Vertex-compatible providers.
 type VertexCompatKey struct {
+	// GroupingID identifies this source record independently of its routing fields.
+	GroupingID string `yaml:"grouping-id,omitempty" json:"grouping-id,omitempty"`
+
 	// APIKey is the authentication key for accessing the Vertex-compatible API.
 	// Maps to the x-goog-api-key header.
 	APIKey string `yaml:"api-key" json:"api-key"`
@@ -87,7 +90,8 @@ func (m VertexCompatModel) GetThinking() *registry.ThinkingSupport {
 	return m.Thinking
 }
 
-// SanitizeVertexCompatKeys deduplicates and normalizes Vertex-compatible API key credentials.
+// SanitizeVertexCompatKeys normalizes Vertex credentials and deduplicates legacy records.
+// Grouping-enabled configurations and records with permanent identities are not merged.
 func (cfg *Config) SanitizeVertexCompatKeys() {
 	if cfg == nil {
 		return
@@ -120,7 +124,7 @@ func (cfg *Config) SanitizeVertexCompatKeys() {
 
 		// Use API key + base URL as uniqueness key
 		uniqueKey := entry.APIKey + "|" + entry.BaseURL
-		if _, exists := seen[uniqueKey]; exists {
+		if _, exists := seen[uniqueKey]; exists && entry.GroupingID == "" && !cfg.Grouping.Enabled {
 			continue
 		}
 		seen[uniqueKey] = struct{}{}

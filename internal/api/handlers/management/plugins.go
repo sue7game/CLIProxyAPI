@@ -215,6 +215,9 @@ func (h *Handler) GetPluginConfig(c *gin.Context) {
 
 // PatchPluginEnabled updates plugins.configs.<id>.enabled without touching plugins.enabled.
 func (h *Handler) PatchPluginEnabled(c *gin.Context) {
+	if h.withConfigDraft(c, "PatchPluginEnabled", (*Handler).PatchPluginEnabled) {
+		return
+	}
 	id, okID := pluginIDFromRequest(c)
 	if !okID {
 		return
@@ -251,6 +254,9 @@ func (h *Handler) PatchPluginEnabled(c *gin.Context) {
 
 // PutPluginConfig replaces plugins.configs.<id> with the request object.
 func (h *Handler) PutPluginConfig(c *gin.Context) {
+	if h.withConfigDraft(c, "PutPluginConfig", (*Handler).PutPluginConfig) {
+		return
+	}
 	id, okID := pluginIDFromRequest(c)
 	if !okID {
 		return
@@ -279,6 +285,9 @@ func (h *Handler) PutPluginConfig(c *gin.Context) {
 
 // PatchPluginConfig shallow-merges plugins.configs.<id> with the request object.
 func (h *Handler) PatchPluginConfig(c *gin.Context) {
+	if h.withConfigDraft(c, "PatchPluginConfig", (*Handler).PatchPluginConfig) {
+		return
+	}
 	id, okID := pluginIDFromRequest(c)
 	if !okID {
 		return
@@ -321,6 +330,10 @@ func (h *Handler) PatchPluginConfig(c *gin.Context) {
 
 // DeletePlugin removes the selected local plugin file and its saved config.
 func (h *Handler) DeletePlugin(c *gin.Context) {
+	if h != nil {
+		h.pluginMutationMu.Lock()
+		defer h.pluginMutationMu.Unlock()
+	}
 	id, okID := pluginIDFromRequest(c)
 	if !okID {
 		return
@@ -382,24 +395,10 @@ func (h *Handler) DeletePlugin(c *gin.Context) {
 		}
 	}
 
-	h.mu.Lock()
-	delete(h.cfg.Plugins.Configs, id)
-	if configured {
-		if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); errSave != nil {
-			h.mu.Unlock()
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":        "config_save_failed",
-				"message":      fmt.Sprintf("plugin deleted but saving config failed: %s", errSave.Error()),
-				"file_deleted": fileDeleted,
-				"path":         path,
-			})
-			return
-		}
+	expected := pluginConfigExpectation{directory: pluginsDir, original: item, configured: configured}
+	if !h.commitDeletedPluginConfig(c, id, path, fileDeleted, expected) {
+		return
 	}
-	cfgSnapshot := h.reloadSnapshotConfigLocked()
-	h.mu.Unlock()
-
-	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), cfgSnapshot)
 	c.JSON(http.StatusOK, gin.H{
 		"status":             "deleted",
 		"id":                 htmlsanitize.String(id),

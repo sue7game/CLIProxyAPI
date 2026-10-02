@@ -47,17 +47,19 @@ var liveProtocolHeaders = []string{
 
 // Handler forwards Codex live session requests through the shared auth scheduler.
 type Handler struct {
-	authManager          *auth.Manager
-	cfg                  *config.Config
-	sessions             *sessionStore
-	clientSecrets        *clientSecretStore
-	sidebandAPIBaseURL   string
-	mediaRelayMu         sync.RWMutex
-	mediaRelay           mediaRelayFactory
-	mediaRelayErr        error
-	mediaRelayConfig     config.CodexLiveMediaRelayConfig
-	mediaRelayConfigured bool
-	mediaLimiter         *mediaSessionLimiter
+	authManager            *auth.Manager
+	cfg                    *config.Config
+	sessions               *sessionStore
+	clientSecrets          *clientSecretStore
+	sidebandAPIBaseURL     string
+	mediaRelayMu           sync.RWMutex
+	mediaRelay             mediaRelayFactory
+	mediaRelayErr          error
+	mediaRelayConfig       config.CodexLiveMediaRelayConfig
+	mediaRelayConfigured   bool
+	mediaLimiter           *mediaSessionLimiter
+	credentialActivationMu sync.Mutex
+	unconfirmedDirectMedia bool
 }
 
 // NewHandler creates a Codex live session handler.
@@ -211,6 +213,18 @@ func (h *Handler) Handle(c *gin.Context) {
 		writeLiveError(c, http.StatusServiceUnavailable, mediaRelayErr.Error())
 		return
 	}
+	if h.authManager.CredentialAccessPolicyEnabled() && mediaRelay == nil {
+		writeLiveError(c, http.StatusServiceUnavailable, "Realtime SDP requires a revocable media relay while grouping is enabled")
+		return
+	}
+	if mediaRelay == nil {
+		release, errAdmission := h.beginDirectMediaRequest()
+		if errAdmission != nil {
+			writeSelectionError(c, errAdmission)
+			return
+		}
+		defer release()
+	}
 	var mediaSession mediaRelaySession
 	mediaRetained := false
 
@@ -257,6 +271,19 @@ func (h *Handler) Handle(c *gin.Context) {
 		defer releaseAttempt()
 	}
 	selectedIndex := selected.EnsureIndex()
+	accessWatch, errAccess := h.watchCredentialAccess(ctx, selected)
+	if errAccess != nil {
+		writeSelectionError(c, errAccess)
+		return
+	}
+	accessRetained := false
+	defer func() {
+		if !accessRetained {
+			_ = accessWatch.close()
+		}
+	}()
+	ctx, stopAccessRequest := accessWatch.requestContext(ctx)
+	defer stopAccessRequest()
 	logging.SetGinCPATraceID(c, selectedIndex)
 	if selection != nil {
 		defer func() {
@@ -282,6 +309,8 @@ func (h *Handler) Handle(c *gin.Context) {
 			writeLiveError(c, clienterror.HTTPStatusFromErrorOr(errSDP, http.StatusBadGateway), errSDP.Error())
 			return
 		}
+		watchedMedia := mediaSession
+		accessWatch.resources.add(func() error { return watchedMedia.CloseWithReason("credential_access_revoked") })
 		defer func() {
 			if !mediaRetained {
 				if errClose := mediaSession.CloseWithReason("request_not_retained"); errClose != nil {
@@ -335,6 +364,10 @@ func (h *Handler) Handle(c *gin.Context) {
 		helps.RecordAPIResponseError(ctx, runtimeConfig, errRequest)
 		writeLiveError(c, clienterror.HTTPStatusFromErrorOr(errRequest, http.StatusBadGateway), errRequest.Error())
 		return
+	}
+	if mediaRelay == nil && resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		// A failed body read or downstream write cannot prove direct media stopped.
+		h.unconfirmedDirectMedia = true
 	}
 	var closeResponseOnce sync.Once
 	var closeResponseErr error
@@ -419,6 +452,7 @@ func (h *Handler) Handle(c *gin.Context) {
 			clientMeta := logging.GetClientRequestMetadata(ctx)
 			session := liveSession{
 				authID:          selected.ID,
+				credential:      selected.Clone(),
 				model:           model,
 				media:           mediaSession,
 				sessionID:       clientMeta.SessionID,
@@ -452,6 +486,14 @@ func (h *Handler) Handle(c *gin.Context) {
 			}
 			storedSession = h.sessions.put(callID, session)
 			sessionStored = storedSession.callID != ""
+			if sessionStored {
+				if errAccess = accessWatch.retain(h, storedSession); errAccess != nil {
+					h.sessions.complete(storedSession, "credential_access_revoked")
+					writeSelectionError(c, errAccess)
+					return
+				}
+				accessRetained = true
+			}
 			if mediaSession != nil {
 				mediaSession.SetCloseHandler(func(reason string) {
 					h.sessions.complete(storedSession, reason)

@@ -57,37 +57,38 @@ type pluginLoadResult struct {
 }
 
 type Host struct {
-	applyMu                chan struct{}
-	mu                     sync.Mutex
-	loader                 pluginLoader
-	loaded                 map[string]*loadedPlugin
-	retired                map[string][]*loadedPlugin
-	loading                map[string]*pluginLoadRequest
-	fused                  map[string]string
-	pluginFileVersions     map[string]string
-	activePluginVersions   map[string]string
-	activePluginPaths      map[string]string
-	cleanupFilesPending    bool
-	runtimeConfig          *config.Config
-	authManager            *coreauth.Manager
-	modelExecutor          modelExecutor
-	modelClientIDs         map[string]struct{}
-	executorModelClientIDs map[string]struct{}
-	modelProviders         map[string]string
-	modelRegistrations     map[string]pluginModelRegistration
-	providerModels         map[string][]*registryModelInfo
-	executorProviders      map[string]struct{}
-	accessProviderKeys     map[string]struct{}
-	commandLineFlags       map[string]commandLineFlagRecord
-	commandLineHits        map[string]struct{}
-	managementRoutes       map[string]managementRouteRecord
-	resourceRoutes         map[string]resourceRouteRecord
-	deactivationPending    map[string]pluginDeactivationTarget
-	streams                *streamBridge
-	httpStreams            *hostHTTPStreamBridge
-	modelStreams           *modelStreamBridge
-	callbackContexts       *callbackContextRegistry
-	snapshot               atomic.Value
+	applyMu                 chan struct{}
+	mu                      sync.Mutex
+	loader                  pluginLoader
+	loaded                  map[string]*loadedPlugin
+	retired                 map[string][]*loadedPlugin
+	loading                 map[string]*pluginLoadRequest
+	fused                   map[string]string
+	pluginFileVersions      map[string]string
+	activePluginVersions    map[string]string
+	activePluginPaths       map[string]string
+	cleanupFilesPending     bool
+	runtimeConfig           *config.Config
+	authManager             *coreauth.Manager
+	groupingAuthFileApplier GroupingAuthFileApplier
+	modelExecutor           modelExecutor
+	modelClientIDs          map[string]struct{}
+	executorModelClientIDs  map[string]struct{}
+	modelProviders          map[string]string
+	modelRegistrations      map[string]pluginModelRegistration
+	providerModels          map[string][]*registryModelInfo
+	executorProviders       map[string]struct{}
+	accessProviderKeys      map[string]struct{}
+	commandLineFlags        map[string]commandLineFlagRecord
+	commandLineHits         map[string]struct{}
+	managementRoutes        map[string]managementRouteRecord
+	resourceRoutes          map[string]resourceRouteRecord
+	deactivationPending     map[string]pluginDeactivationTarget
+	streams                 *streamBridge
+	httpStreams             *hostHTTPStreamBridge
+	modelStreams            *modelStreamBridge
+	callbackContexts        *callbackContextRegistry
+	snapshot                atomic.Value
 }
 
 func New() *Host {

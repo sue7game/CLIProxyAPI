@@ -96,6 +96,14 @@ func (h *Handler) HandleDirectWebsocket(c *gin.Context) {
 		defer selection.End("session_closed")
 	}
 	logging.SetGinCPATraceID(c, selected.EnsureIndex())
+	accessWatch, errAccess := h.watchCredentialAccess(ctx, selected)
+	if errAccess != nil {
+		writeSelectionError(c, errAccess)
+		return
+	}
+	defer func() { _ = accessWatch.close() }()
+	ctx, stopAccessRequest := accessWatch.requestContext(ctx)
+	defer stopAccessRequest()
 
 	upstreamURL := h.directRealtimeURL(requestedModel)
 	dialUpstream := func(current *auth.Auth) (*websocket.Conn, *http.Response, error) {
@@ -185,6 +193,11 @@ func (h *Handler) HandleDirectWebsocket(c *gin.Context) {
 	closeHandshakeBody(handshakeResponse, "direct websocket handshake")
 	closeUpstream := websocketCloseFunc("upstream", upstream)
 	defer func() { _ = closeUpstream() }()
+	accessWatch.resources.add(closeUpstream)
+	if errAccess = accessWatch.currentError(); errAccess != nil {
+		writeSelectionError(c, errAccess)
+		return
+	}
 	if len(tokenSession) > 0 {
 		updateSession, errSession := realtimeSessionUpdate(tokenSession)
 		if errSession != nil {
@@ -226,13 +239,14 @@ func (h *Handler) HandleDirectWebsocket(c *gin.Context) {
 	}
 	closeDownstream := websocketCloseFunc("downstream", downstream)
 	defer func() { _ = closeDownstream() }()
+	accessWatch.resources.add(closeDownstream)
 	if selection != nil {
 		if errBind := selection.Bind(closeDownstream); errBind != nil {
 			return
 		}
 	}
 
-	if errRelay := relayWebsockets(downstream, upstream); errRelay != nil && !isNormalWebsocketClose(errRelay) {
+	if errRelay := relayWebsockets(downstream, upstream, accessWatch.currentError); errRelay != nil && !isNormalWebsocketClose(errRelay) {
 		helps.RecordAPIWebsocketError(ctx, h.currentConfig(), "relay", errRelay)
 		log.WithError(errRelay).Debug("codex realtime direct websocket relay closed")
 	}

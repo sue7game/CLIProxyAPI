@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/groupingapi"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -26,11 +28,24 @@ type serverOptionConfig struct {
 	postAuthPersistHook   auth.PostAuthHook
 	pluginHost            *pluginhost.Host
 	configReloadHook      func(context.Context, *config.Config)
+	configApplyHook       management.ConfigApplyHook
+	authFileApplyHook     management.AuthFileApplyHook
+	groupingBackend       groupingapi.Backend
 	exampleAPIKeySafeMode bool
 }
 
 // ServerOption customises HTTP server construction.
 type ServerOption func(*serverOptionConfig)
+
+// WithConfigApplyHook supplies a synchronous management configuration transaction.
+func WithConfigApplyHook(hook management.ConfigApplyHook) ServerOption {
+	return func(cfg *serverOptionConfig) { cfg.configApplyHook = hook }
+}
+
+// WithAuthFileApplyHook supplies a synchronous credential upload transaction.
+func WithAuthFileApplyHook(hook management.AuthFileApplyHook) ServerOption {
+	return func(cfg *serverOptionConfig) { cfg.authFileApplyHook = hook }
+}
 
 func defaultRequestLoggerFactory(cfg *config.Config, configPath string) logging.RequestLogger {
 	configDir := filepath.Dir(configPath)

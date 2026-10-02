@@ -17,7 +17,8 @@ import (
 )
 
 type rpcHostAuthGetRequest struct {
-	AuthIndex string `json:"auth_index"`
+	AuthIndex      string `json:"auth_index"`
+	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
 type rpcHostAuthListResponse struct {
@@ -51,14 +52,20 @@ func (h *Host) currentAuthManager() *coreauth.Manager {
 }
 
 func (h *Host) callHostAuthList(ctx context.Context, request []byte) ([]byte, error) {
-	_ = ctx
+	var req struct {
+		HostCallbackID string `json:"host_callback_id,omitempty"`
+	}
 	if len(bytesTrimSpace(request)) > 0 {
-		var req map[string]any
 		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 			return nil, fmt.Errorf("decode host auth list request: %w", errUnmarshal)
 		}
 	}
-	entries, errList := h.listAuthFiles()
+	var errContext error
+	ctx, errContext = h.resolveGroupingCallbackContext(ctx, req.HostCallbackID)
+	if errContext != nil {
+		return nil, errContext
+	}
+	entries, errList := h.listAuthorizedAuthFiles(ctx)
 	if errList != nil {
 		return nil, errList
 	}
@@ -66,16 +73,20 @@ func (h *Host) callHostAuthList(ctx context.Context, request []byte) ([]byte, er
 }
 
 func (h *Host) callHostAuthGet(ctx context.Context, request []byte) ([]byte, error) {
-	_ = ctx
 	var req rpcHostAuthGetRequest
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode host auth get request: %w", errUnmarshal)
+	}
+	var errContext error
+	ctx, errContext = h.resolveGroupingCallbackContext(ctx, req.HostCallbackID)
+	if errContext != nil {
+		return nil, errContext
 	}
 	authIndex := strings.TrimSpace(req.AuthIndex)
 	if authIndex == "" {
 		return nil, fmt.Errorf("auth_index is required")
 	}
-	auth, rawJSON, errGet := h.authPhysicalJSONByIndex(authIndex)
+	auth, rawJSON, errGet := h.authorizedAuthPhysicalJSONByIndex(ctx, authIndex)
 	if errGet != nil {
 		return nil, errGet
 	}
@@ -93,16 +104,20 @@ func (h *Host) callHostAuthGet(ctx context.Context, request []byte) ([]byte, err
 }
 
 func (h *Host) callHostAuthGetRuntime(ctx context.Context, request []byte) ([]byte, error) {
-	_ = ctx
 	var req rpcHostAuthGetRequest
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode host auth get runtime request: %w", errUnmarshal)
+	}
+	var errContext error
+	ctx, errContext = h.resolveGroupingCallbackContext(ctx, req.HostCallbackID)
+	if errContext != nil {
+		return nil, errContext
 	}
 	authIndex := strings.TrimSpace(req.AuthIndex)
 	if authIndex == "" {
 		return nil, fmt.Errorf("auth_index is required")
 	}
-	auth, errGet := h.authByIndex(authIndex)
+	auth, errGet := h.authorizedAuthByIndex(ctx, authIndex)
 	if errGet != nil {
 		return nil, errGet
 	}
@@ -114,6 +129,11 @@ func (h *Host) callHostAuthGetRuntime(ctx context.Context, request []byte) ([]by
 }
 
 func (h *Host) callHostAuthSave(ctx context.Context, request []byte) ([]byte, error) {
+	var errContext error
+	ctx, errContext = h.authorizeGroupingMutation(ctx, request)
+	if errContext != nil {
+		return nil, errContext
+	}
 	var req pluginapi.HostAuthSaveRequest
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode host auth save request: %w", errUnmarshal)
@@ -282,6 +302,9 @@ func validateHostAuthSaveRequest(req pluginapi.HostAuthSaveRequest) (string, []b
 }
 
 func (h *Host) saveAuthFile(ctx context.Context, name string, data []byte) (string, error) {
+	if path, handled, err := h.applyGroupingAuthFile(ctx, name, data); handled {
+		return path, err
+	}
 	authDir := h.resolvedAuthDir()
 	if authDir == "" {
 		return "", fmt.Errorf("auth directory is unavailable")

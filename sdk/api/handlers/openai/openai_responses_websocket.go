@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
@@ -350,6 +351,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	pinnedAuthID := ""
 	// Preserve independent upstream auth affinity when a downstream session switches providers.
 	pinnedAuthByProvider := make(map[string]responsesWebsocketPinnedAuthState)
+	groupedBindings := &websocketCredentialBindings{}
 	passthroughModelName := ""
 	upstreamMode := responsesWebsocketUpstreamModeUnknown
 	upstreamWebsocketAuthID := ""
@@ -430,6 +432,20 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		}
 		if msgType != websocket.TextMessage && msgType != websocket.BinaryMessage {
 			continue
+		}
+		errAccess := h.authorizeWebsocketTurn(c.Request.Context(), pinnedAuthID)
+		if errAccess == nil && pinnedAuthID != "" {
+			errAccess = groupedBindings.authorize(c.Request.Context(), h, pinnedAuthID)
+		}
+		if errAccess != nil {
+			_, errWrite := writeResponsesWebsocketError(writer, wsTimelineLog, &interfaces.ErrorMessage{
+				StatusCode: clienterror.HTTPStatusFromErrorOr(errAccess, http.StatusForbidden), Error: errAccess,
+			})
+			wsTerminateErr = errAccess
+			if errWrite != nil {
+				wsTerminateErr = errWrite
+			}
+			return
 		}
 		// log.Infof(
 		// 	"responses websocket: downstream_in id=%s type=%d event=%s payload=%s",
@@ -691,9 +707,11 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
 		if duplexInput != nil {
 			cliCtx = cliproxyexecutor.WithWebsocketInput(cliCtx, duplexInput)
+			authorizationCtx := cliCtx
 			cliCtx = cliproxyexecutor.WithWebsocketAuthCheck(cliCtx, func(authID string) bool {
 				current, ok := sessionAuthByID(authID)
-				return ok && current != nil && !current.Disabled && current.Status != coreauth.StatusDisabled
+				return ok && current != nil && !current.Disabled && current.Status != coreauth.StatusDisabled &&
+					groupedBindings.authorize(authorizationCtx, h, authID) == nil
 			})
 		}
 		if nativeWebsocketPassthrough && requestRequiresCurrentUpstreamWebsocket {
@@ -714,6 +732,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			if !ok || selectedAuth == nil {
 				return
 			}
+			groupedBindings.remember(selectedAuth)
 			attemptedUpstreamMode = upstreamModeForAuth(selectedAuth)
 			codexDuplexStream.Store(duplexInput != nil && attemptedUpstreamMode == responsesWebsocketUpstreamModeWS && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
 			preserveNativeOutput.Store(nativeRequest && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))

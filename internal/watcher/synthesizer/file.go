@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	kimiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	sdkauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
@@ -102,6 +103,9 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			auths = compactPluginAuths(auths)
 			if len(auths) == 0 {
 				return nil, nil
+			}
+			if errGrouping := sdkauth.ApplyFileGroupingIDs(auths, metadata, cfg != nil && cfg.Grouping.Enabled); errGrouping != nil {
+				return nil, errGrouping
 			}
 			perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 			perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
@@ -208,6 +212,9 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 		UpdatedAt: now,
 	}
 	// Read priority from auth file.
+	if errGrouping := sdkauth.ApplyFileGroupingIDs([]*coreauth.Auth{a}, metadata, cfg != nil && cfg.Grouping.Enabled); errGrouping != nil {
+		return nil, errGrouping
+	}
 	if rawPriority, ok := metadata["priority"]; ok {
 		switch v := rawPriority.(type) {
 		case float64:

@@ -132,6 +132,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
+	m.NotifyCredentialAccessChanged()
 	if cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
 	}
@@ -280,6 +281,7 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 		_ = m.persist(ctx, auth)
 	}
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
+	m.NotifyCredentialAccessChanged()
 	if cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
 	}
@@ -327,6 +329,7 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 	m.authEpochs[id]++
 	tombstoneEpoch := m.authEpochs[id]
 	m.mu.Unlock()
+	m.NotifyCredentialAccessChanged()
 
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()

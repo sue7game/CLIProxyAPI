@@ -101,7 +101,8 @@ func hostCallbackPluginIDFromContext(ctx context.Context) string {
 	return strings.TrimSpace(pluginID)
 }
 
-func (h *Host) callFromPlugin(ctx context.Context, method string, request []byte) ([]byte, error) {
+func (h *Host) callFromPlugin(ctx context.Context, method string, request []byte) (response []byte, err error) {
+	defer func() { h.rememberCallbackAccessDenial(ctx, method, request, err) }()
 	switch method {
 	case pluginabi.MethodHostModelExecute:
 		return h.callHostModelExecute(ctx, request)
@@ -110,7 +111,7 @@ func (h *Host) callFromPlugin(ctx context.Context, method string, request []byte
 	case pluginabi.MethodHostModelStreamRead:
 		return h.callHostModelStreamRead(ctx, request)
 	case pluginabi.MethodHostModelStreamClose:
-		return h.callHostModelStreamClose(request)
+		return h.callGroupedStreamClose(ctx, method, request)
 	case pluginabi.MethodHostHTTPDo:
 		return h.callHostHTTPDo(ctx, request)
 	case pluginabi.MethodHostHTTPDoStream:
@@ -118,11 +119,11 @@ func (h *Host) callFromPlugin(ctx context.Context, method string, request []byte
 	case pluginabi.MethodHostHTTPStreamRead:
 		return h.callHostHTTPStreamRead(ctx, request)
 	case pluginabi.MethodHostHTTPStreamClose:
-		return h.callHostHTTPStreamClose(request)
+		return h.callGroupedStreamClose(ctx, method, request)
 	case pluginabi.MethodHostStreamEmit:
 		return h.callHostStreamEmit(ctx, request)
 	case pluginabi.MethodHostStreamClose:
-		return h.callHostStreamClose(request)
+		return h.callGroupedStreamClose(ctx, method, request)
 	case pluginabi.MethodHostLog:
 		return h.callHostLog(ctx, request)
 	case pluginabi.MethodHostAuthList:
@@ -156,7 +157,11 @@ func (h *Host) callHostHTTPDo(ctx context.Context, request []byte) ([]byte, erro
 	if errDecode != nil {
 		return nil, errDecode
 	}
-	ctx = h.resolveCallbackContext(callbackID, ctx)
+	var errContext error
+	ctx, errContext = h.resolveGroupingCallbackContext(ctx, callbackID)
+	if errContext != nil {
+		return nil, errContext
+	}
 	resp, errDo := h.newHTTPClient(nil).Do(ctx, httpReq)
 	if errDo != nil {
 		return nil, errDo
@@ -173,7 +178,11 @@ func (h *Host) callHostHTTPDoStream(ctx context.Context, request []byte) ([]byte
 	if errDecode != nil {
 		return nil, errDecode
 	}
-	ctx = h.resolveCallbackContext(callbackID, ctx)
+	var errContext error
+	ctx, errContext = h.resolveGroupingCallbackContext(ctx, callbackID)
+	if errContext != nil {
+		return nil, errContext
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -185,11 +194,14 @@ func (h *Host) callHostHTTPDoStream(ctx context.Context, request []byte) ([]byte
 	}
 	streamID := ""
 	if h != nil && h.httpStreams != nil {
-		streamID = h.httpStreams.open(resp.Chunks, cancel)
+		streamID = h.httpStreams.openOwned(resp.Chunks, cancel, callbackID)
 	}
 	if streamID == "" {
 		cancel()
 		return nil, fmt.Errorf("host http stream bridge is unavailable")
+	}
+	if callbackID != "" {
+		h.addCallbackCleanup(callbackID, func() { h.httpStreams.close(streamID) })
 	}
 	return marshalRPCResult(rpcHostHTTPStreamResponse{
 		StatusCode: resp.StatusCode,
@@ -205,6 +217,9 @@ func (h *Host) callHostHTTPStreamRead(ctx context.Context, request []byte) ([]by
 	}
 	if h == nil || h.httpStreams == nil {
 		return nil, fmt.Errorf("host http stream bridge is unavailable")
+	}
+	if errAccess := h.authorizeGroupedStream(ctx, pluginabi.MethodHostHTTPStreamRead, req.StreamID); errAccess != nil {
+		return nil, errAccess
 	}
 	chunk, done, errRead := h.httpStreams.read(ctx, req.StreamID)
 	if errRead != nil {
@@ -278,6 +293,9 @@ func (h *Host) callHostStreamEmit(ctx context.Context, request []byte) ([]byte, 
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode stream emit request: %w", errUnmarshal)
 	}
+	if errAccess := h.authorizeGroupedStream(ctx, pluginabi.MethodHostStreamEmit, req.StreamID); errAccess != nil {
+		return nil, errAccess
+	}
 	chunk := pluginapi.ExecutorStreamChunk{Payload: append([]byte(nil), req.Payload...)}
 	if req.Error != "" {
 		chunk.Err = fmt.Errorf("%s", req.Error)
@@ -313,7 +331,11 @@ func (h *Host) callHostModelExecute(ctx context.Context, request []byte) ([]byte
 		return nil, fmt.Errorf("host model executor is unavailable")
 	}
 	skipPluginID := h.callbackCallerPluginID(ctx, req.HostCallbackID)
-	ctx = h.resolveCallbackContext(req.HostCallbackID, ctx)
+	var errContext error
+	ctx, errContext = h.resolveGroupingCallbackContext(ctx, req.HostCallbackID)
+	if errContext != nil {
+		return nil, errContext
+	}
 	resp, errMsg := executor.ExecuteModel(ctx, modelExecutionRequestFromPlugin(req.HostModelExecutionRequest, skipPluginID))
 	if errMsg != nil {
 		return nil, modelExecutionError(errMsg)
