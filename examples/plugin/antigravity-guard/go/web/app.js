@@ -217,7 +217,7 @@ async function credentialAction(action, authIndex) {
   state.busyAuth.add(authIndex);
   renderCredentials();
   try {
-    const path = action === "quota" ? "/quota" : action === "manual-recover" ? "/recover" : "/cooldown/clear";
+    const path = action === "quota" ? "/quota/refresh" : action === "manual-recover" ? "/recover" : "/cooldown/clear";
     await api(path, { method: "POST", body: JSON.stringify({ auth_index: authIndex }) });
     showToast(action === "quota" ? "额度已刷新" : action === "manual-recover" ? "凭证状态已恢复" : weeklyQuarantine ? "隔离已解除" : "冷却已解除");
     await loadState({ force: true });

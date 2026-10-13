@@ -131,7 +131,7 @@ The page asks for the Management Key and keeps it only in the current tab's `ses
 
 - `GET /v0/management/plugins/antigravity-guard/state`
 - `POST /v0/management/plugins/antigravity-guard/settings`
-- `POST /v0/management/plugins/antigravity-guard/quota`
+- `POST /v0/management/plugins/antigravity-guard/quota/refresh`
 - `POST /v0/management/plugins/antigravity-guard/proxy`
 - `POST /v0/management/plugins/antigravity-guard/proxy/alias`
 - `POST /v0/management/plugins/antigravity-guard/cooldown/clear`

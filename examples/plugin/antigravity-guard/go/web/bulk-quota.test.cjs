@@ -36,7 +36,7 @@ test("fetches selected quotas serially and continues after a failure", async () 
 
   await controller.start(["auth-1", "auth-2", "auth-3", "auth-1"]);
 
-  assert.deepEqual(calls, [["/quota", "auth-1"], ["/quota", "auth-2"], ["/quota", "auth-3"]]);
+  assert.deepEqual(calls, [["/quota/refresh", "auth-1"], ["/quota/refresh", "auth-2"], ["/quota/refresh", "auth-3"]]);
   assert.equal(maxActive, 1);
   assert.equal(reloaded, 1);
   assert.deepEqual(busyStates, [true, false]);

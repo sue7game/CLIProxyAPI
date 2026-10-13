@@ -47,7 +47,7 @@ func (a *application) dispatchManagement(request managementRequest) managementRe
 	switch request.Method + " " + request.Path {
 	case http.MethodGet + " " + managementAPIPath + "/state":
 		return a.stateResponse()
-	case http.MethodPost + " " + managementAPIPath + "/quota":
+	case http.MethodPost + " " + managementAPIPath + "/quota/refresh":
 		return a.quotaResponse(request.Body, request.HostCallbackID)
 	case http.MethodPost + " " + managementAPIPath + "/proxy":
 		return a.proxyResponse(request.Body)

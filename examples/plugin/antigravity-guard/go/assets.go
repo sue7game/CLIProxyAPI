@@ -14,7 +14,7 @@ func managementRoutes() managementRegistration {
 		Routes: []managementRoute{
 			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/state", Description: "Return Antigravity guard state."},
 			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/settings", Description: "Update in-memory Antigravity 429 protection settings."},
-			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/quota", Description: "Fetch quota for one Antigravity credential."},
+			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/quota/refresh", Description: "Fetch quota for one Antigravity credential."},
 			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/proxy", Description: "Set, force direct, or clear a runtime proxy override."},
 			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/proxy/alias", Description: "Set or clear an in-memory alias for a current Antigravity proxy."},
 			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/cooldown/clear", Description: "Clear an automatic runtime cooldown."},

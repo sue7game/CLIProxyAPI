@@ -30,7 +30,7 @@
           options.button.textContent = `获取额度 ${current}/${queue.length}`;
           options.progress.textContent = `正在获取第 ${current} 个，共 ${queue.length} 个`;
           try {
-            await options.request("/quota", {
+            await options.request("/quota/refresh", {
               method: "POST",
               body: JSON.stringify({ auth_index: queue[index] }),
             });

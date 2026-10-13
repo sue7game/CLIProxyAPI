@@ -201,7 +201,7 @@ func TestManagementQuotaPropagatesHostCallbackID(t *testing.T) {
 	}
 	response := app.dispatchManagement(managementRequest{
 		Method:         http.MethodPost,
-		Path:           managementAPIPath + "/quota",
+		Path:           managementAPIPath + "/quota/refresh",
 		Body:           body,
 		HostCallbackID: "management-callback-123",
 	})
