@@ -52,6 +52,7 @@ print_usage() {
 
 说明：
   - 脚本不会停止任何正在运行的服务。
+  - run 要求配置固定端口 1–65535；未设置、空值或端口 0 不会回退到其他端口。
   - 如果端口已被占用，run 会直接退出，不安装或覆盖插件。
   - build 只覆盖专用 build 目录中的同名构建产物。
   - 覆盖旧插件前会询问，并在同目录保留时间戳备份。
@@ -97,16 +98,10 @@ check_environment() {
 }
 
 detect_port() {
-  awk '
-    /^[[:space:]]*#/ { next }
-    /^port:[[:space:]]*/ {
-      value = $0
-      sub(/^port:[[:space:]]*/, "", value)
-      sub(/[[:space:]#].*$/, "", value)
-      print value
-      exit
-    }
-  ' "$CONFIG_FILE"
+  (
+    cd "$ROOT_DIR"
+    go run "./examples/plugin/antigravity-guard/launcher-port" "$CONFIG_FILE"
+  )
 }
 
 detect_plugin_dir() {
@@ -275,8 +270,8 @@ run_service() {
 
   check_environment
   port="$(detect_port)"
-  port="${port:-8317}"
   [[ "$port" =~ ^[0-9]+$ ]] || fail "端口不是有效数字：$port"
+  [[ "$port" -ge 1 && "$port" -le 65535 ]] || fail "启动脚本需要固定端口 1–65535；请设置 server.port 或旧版 port"
   check_port_available "$port"
   install_plugin
 

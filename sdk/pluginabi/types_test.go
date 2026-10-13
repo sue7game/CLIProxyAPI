@@ -70,6 +70,15 @@ func TestMethodNamesAreStable(t *testing.T) {
 	if MethodHostHTTPDo != "host.http.do" {
 		t.Fatalf("MethodHostHTTPDo = %q", MethodHostHTTPDo)
 	}
+	if MethodHostHTTPDoStream != "host.http.do_stream" {
+		t.Fatalf("MethodHostHTTPDoStream = %q", MethodHostHTTPDoStream)
+	}
+	if MethodHostHTTPOperationOpen != "host.http.operation_open" {
+		t.Fatalf("MethodHostHTTPOperationOpen = %q", MethodHostHTTPOperationOpen)
+	}
+	if MethodHostHTTPCancel != "host.http.cancel" {
+		t.Fatalf("MethodHostHTTPCancel = %q", MethodHostHTTPCancel)
+	}
 	if MethodHostHTTPStreamRead != "host.http.stream_read" {
 		t.Fatalf("MethodHostHTTPStreamRead = %q", MethodHostHTTPStreamRead)
 	}
@@ -105,6 +114,9 @@ func TestMethodNamesAreStable(t *testing.T) {
 	}
 	if MethodHostAuthRequest != "host.auth.request" {
 		t.Fatalf("MethodHostAuthRequest = %q", MethodHostAuthRequest)
+	}
+	if MethodHostRoutingResetCooldown != "host.routing.reset_cooldown" {
+		t.Fatalf("MethodHostRoutingResetCooldown = %q", MethodHostRoutingResetCooldown)
 	}
 	if MethodExecutorExecuteStream != "executor.execute_stream" {
 		t.Fatalf("MethodExecutorExecuteStream = %q", MethodExecutorExecuteStream)

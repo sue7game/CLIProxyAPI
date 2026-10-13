@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"gopkg.in/yaml.v3"
 )
 
@@ -36,23 +36,23 @@ func TestHostApplyConfigDeactivatesAndReactivatesLoadedPlugin(t *testing.T) {
 	if host.PluginRegistered("alpha") {
 		t.Fatal("PluginRegistered(alpha) = true after deactivation")
 	}
-	if !host.PluginLoaded("alpha") {
-		t.Fatal("PluginLoaded(alpha) = false after deactivation")
+	if host.PluginLoaded("alpha") {
+		t.Fatal("PluginLoaded(alpha) = true after deactivation")
 	}
-	if lookup.shutdownCalls != 0 {
-		t.Fatalf("shutdown calls after deactivation = %d, want 0", lookup.shutdownCalls)
+	if lookup.shutdownCalls != 1 {
+		t.Fatalf("shutdown calls after deactivation = %d, want 1", lookup.shutdownCalls)
 	}
 
 	host.ApplyConfig(context.Background(), pluginHostConfig(pluginsDir, true, true))
 
-	if len(lifecycleEnabled) != 2 || !lifecycleEnabled[1] {
-		t.Fatalf("reactivation lifecycle enabled values = %#v, want [false true]", lifecycleEnabled)
+	if len(lifecycleEnabled) != 1 || lifecycleEnabled[0] {
+		t.Fatalf("deactivation lifecycle enabled values = %#v, want [false]", lifecycleEnabled)
 	}
 	if !host.PluginRegistered("alpha") {
 		t.Fatal("PluginRegistered(alpha) = false after reactivation")
 	}
-	if loader.openCalls != 1 {
-		t.Fatalf("Open calls = %d, want 1 while reusing the loaded client", loader.openCalls)
+	if loader.openCalls != 2 || plugin.registerCalls != 2 {
+		t.Fatalf("Open/Register calls = %d/%d, want 2/2 after reloading", loader.openCalls, plugin.registerCalls)
 	}
 }
 
@@ -82,11 +82,11 @@ func TestHostApplyConfigGloballyDisabledDeactivatesWithoutResolvingDirectory(t *
 	if snapshot := host.Snapshot(); snapshot.enabled || len(snapshot.records) != 0 {
 		t.Fatalf("Snapshot() = %+v, want globally disabled empty snapshot", snapshot)
 	}
-	if !host.PluginLoaded("alpha") {
-		t.Fatal("PluginLoaded(alpha) = false after global deactivation")
+	if host.PluginLoaded("alpha") {
+		t.Fatal("PluginLoaded(alpha) = true after global deactivation")
 	}
-	if lookup.shutdownCalls != 0 {
-		t.Fatalf("shutdown calls after global deactivation = %d, want 0", lookup.shutdownCalls)
+	if lookup.shutdownCalls != 1 {
+		t.Fatalf("shutdown calls after global deactivation = %d, want 1", lookup.shutdownCalls)
 	}
 }
 
@@ -189,6 +189,7 @@ type retryDeactivationClient struct {
 	mu                sync.Mutex
 	registration      pluginapi.Plugin
 	deactivationCalls int
+	onDeactivate      func(int) error
 }
 
 func (c *retryDeactivationClient) Call(_ context.Context, method string, request []byte) ([]byte, error) {
@@ -210,7 +211,11 @@ func (c *retryDeactivationClient) Call(_ context.Context, method string, request
 		c.deactivationCalls++
 		call := c.deactivationCalls
 		c.mu.Unlock()
-		if call == 1 {
+		if c.onDeactivate != nil {
+			if errDeactivate := c.onDeactivate(call); errDeactivate != nil {
+				return nil, errDeactivate
+			}
+		} else if call == 1 {
 			return nil, fmt.Errorf("temporary deactivation failure")
 		}
 	}

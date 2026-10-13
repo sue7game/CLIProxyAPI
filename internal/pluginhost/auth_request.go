@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func (h *Host) callHostAuthRequest(ctx context.Context, request []byte) ([]byte, error) {
@@ -19,10 +19,15 @@ func (h *Host) callHostAuthRequest(ctx context.Context, request []byte) ([]byte,
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode host auth request: %w", errUnmarshal)
 	}
-	ctx = h.resolveCallbackContext(req.HostCallbackID, ctx)
 	if errValidate := validateHostAuthRequest(req); errValidate != nil {
 		return nil, errValidate
 	}
+	operation, errAcquire := h.acquireHostHTTPOperation(ctx, req.HostCallbackID, "")
+	if errAcquire != nil {
+		return nil, errAcquire
+	}
+	defer operation.finish()
+	ctx = operation.ctx
 
 	auth, errAuth := h.authByIndex(req.AuthIndex)
 	if errAuth != nil {

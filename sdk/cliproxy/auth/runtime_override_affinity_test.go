@@ -3,7 +3,16 @@ package auth
 import (
 	"context"
 	"testing"
+	"time"
 )
+
+func TestRuntimeDisableBlocksQuotaOnlySessionAffinity(t *testing.T) {
+	disabled := true
+	auth := &Auth{runtimeOverride: RuntimeAuthOverride{Disabled: &disabled}}
+	if !isAuthBlockedByQuotaOrAuthForModel(auth, "", time.Time{}) {
+		t.Fatal("runtime-disabled auth must not retain quota-only session affinity")
+	}
+}
 
 func TestManagerRuntimeAuthOverrideInvalidatesSessionAffinityForRoutingChanges(t *testing.T) {
 	selector := NewSessionAffinitySelector(&RoundRobinSelector{})

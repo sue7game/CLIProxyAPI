@@ -106,7 +106,7 @@ plugins:
 
 For migration, the legacy `quota_429_threshold` and `generic_429_threshold` keys are still accepted when `consecutive_429_threshold` is absent; the larger legacy value becomes the unified threshold. The new key takes precedence when present.
 
-`plugins.configs.antigravity-guard.enabled` controls whether the host activates and exposes the plugin. Disabling an already loaded instance deactivates it in place, immediately attempts to restore automatic cooldowns, and safely clears plugin-managed proxy overrides; re-enabling reuses the same instance. `auto_429_enabled` independently controls automatic 429 actions while leaving quota and proxy management available. The host-level `priority` controls plugin ordering; it does not change credential priority.
+`plugins.configs.antigravity-guard.enabled` controls whether the host activates and exposes the plugin. Disabling an instance first removes its active capabilities, then restores automatic cooldowns and clears plugin-managed proxy overrides before unloading it. Cleanup failures keep the instance pending for the next configuration update to retry; a successfully unloaded plugin is loaded anew when re-enabled. `auto_429_enabled` independently controls automatic 429 actions while leaving quota and proxy management available. The host-level `priority` controls plugin ordering; it does not change credential priority.
 
 Optional quota endpoints can be supplied in order:
 
@@ -156,10 +156,10 @@ Use HTTPS or a trusted local connection when entering a Management Key or a prox
 - Every management action revalidates that the target `auth_index` belongs to Antigravity before invoking a host side effect.
 - Browser resources are read-only static assets. Mutating operations are exposed only through authenticated Management API routes.
 - Disabling automatic 429 protection immediately restores automatic cooldown and weekly-quarantine overrides but keeps manually managed proxy overrides. A failed restore remains visible and is retried according to `restore_retry`.
-- Disabling the plugin at the host level removes its routes before sending `enabled: false` through `plugin.reconfigure`. The shared library stays loaded so the same instance can be re-enabled without a process restart. A transient managed-proxy cleanup error is retried according to `restore_retry`.
+- Disabling the plugin at the host level removes its routes before sending `enabled: false` through `plugin.reconfigure`. Host callbacks remain available until cleanup succeeds; only then are the instance and outstanding HTTP operations closed. A failed cleanup remains pending and the next configuration update retries it.
 - Cooldown and quarantine release only revert field revisions written by the guard. A later runtime write, including a same-value write, is treated as manual takeover and is never overwritten.
 - Proxy aliases and the process-keyed `proxy_id` values are not persistent and are recreated after restart.
-- Graceful plugin shutdown stops the restore loop before clearing automatic cooldown, weekly-quarantine, and proxy overrides. Proxy cleanup also uses compare-and-swap and will not clear a proxy taken over by another operation. The host shuts down the retired instance during plugin hot replacement. A process restart clears all runtime state by design.
+- Explicit unload and hot replacement also clear plugin-owned overrides before closing the old instance's callbacks. Failed unload cleanup leaves the instance inactive for a later unload or configuration update to retry; failed replacement cleanup rolls back to the old plugin and retries on the next configuration update. Proxy cleanup uses compare-and-swap and does not clear a proxy taken over by another operation. A process restart clears all runtime state by design.
 
 ## Verification
 

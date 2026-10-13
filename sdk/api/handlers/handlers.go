@@ -16,17 +16,16 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coresession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 	"golang.org/x/net/context"
 )
 
@@ -64,7 +63,8 @@ const (
 )
 
 // BuildErrorResponseBody builds an OpenAI-compatible JSON error response body.
-// If errText is already valid JSON, it is returned as-is to preserve upstream error payloads.
+// If errText is already valid JSON, it is compacted to ensure single-line SSE compatibility
+// while preserving upstream error payloads.
 func BuildErrorResponseBody(status int, errText string) []byte {
 	return BuildErrorResponseBodyWithError(status, errText, nil)
 }
@@ -112,6 +112,10 @@ func BuildErrorResponseBodyWithError(status int, errText string, err error) []by
 	}
 
 	if trimmed != "" && json.Valid([]byte(trimmed)) {
+		var compact bytes.Buffer
+		if errCompact := json.Compact(&compact, []byte(trimmed)); errCompact == nil {
+			return compact.Bytes()
+		}
 		return []byte(trimmed)
 	}
 
@@ -130,6 +134,9 @@ func BuildErrorResponseBodyWithError(status int, errText string, err error) []by
 	case http.StatusNotFound:
 		errType = "invalid_request_error"
 		code = "model_not_found"
+	case http.StatusRequestTimeout:
+		errType = "server_error"
+		code = "request_timeout"
 	default:
 		if status >= http.StatusInternalServerError {
 			errType = "server_error"
@@ -150,53 +157,9 @@ func BuildErrorResponseBodyWithError(status int, errText string, err error) []by
 	return appendErrorMessageHint(status, payload)
 }
 
-var errorMessageHints = map[int]string{
-	http.StatusBadRequest:            "请求格式、参数或上下文不符合要求，或请求内容包含敏感信息",
-	http.StatusUnauthorized:          "账号被封了，等我们换号",
-	http.StatusPaymentRequired:       "上游要求付费或账号额度不可用",
-	http.StatusForbidden:             "账号被封了，等我换号",
-	http.StatusNotFound:              "模型、接口或引用的历史响应不存在",
-	http.StatusRequestTimeout:        "请求已中断或超时",
-	http.StatusConflict:              "请求与当前资源状态冲突",
-	http.StatusRequestEntityTooLarge: "输入、上下文或上传内容超过限制",
-	http.StatusUnprocessableEntity:   "请求字段或参数值无法处理",
-	http.StatusUpgradeRequired:       "当前连接需要协议升级",
-	http.StatusTooManyRequests:       "请求内容不符合要求或内容中敏感信息，请调整，不要一直重试",
-	499:                              "客户端已主动断开连接",
-	http.StatusInternalServerError:   "网络错误，请重试",
-	http.StatusNotImplemented:        "当前接口未实现或不支持",
-	http.StatusBadGateway:            "网络错误，请重试",
-	http.StatusServiceUnavailable:    "账号暂时不可用，等我们处理好",
-	http.StatusGatewayTimeout:        "上游请求超时，请稍后重试",
-}
-
-// AppendErrorMessageHint appends the configured status hint to existing JSON error messages.
-// It leaves bodies without a string message field unchanged.
-func AppendErrorMessageHint(status int, body []byte) []byte {
-	return appendErrorMessageHint(status, body)
-}
-
-func appendErrorMessageHint(status int, body []byte) []byte {
-	hint := strings.TrimSpace(errorMessageHints[status])
-	if hint == "" || !json.Valid(body) {
-		return body
-	}
-	for _, path := range []string{"error.message", "response.error.message", "message"} {
-		message := gjson.GetBytes(body, path)
-		if !message.Exists() || message.Type != gjson.String {
-			continue
-		}
-		text := strings.TrimSpace(message.String())
-		if text == "" || strings.Contains(text, hint) {
-			return body
-		}
-		updated, errSet := sjson.SetBytes(body, path, text+"\n"+hint)
-		if errSet == nil {
-			return updated
-		}
-		return body
-	}
-	return body
+var streamingKeepAliveTickerFactory = func(interval time.Duration) (<-chan time.Time, func()) {
+	ticker := time.NewTicker(interval)
+	return ticker.C, ticker.Stop
 }
 
 // StreamingKeepAliveInterval returns the streaming keep-alive interval for this server (SSE heartbeats and WebSocket Ping frames).
@@ -210,6 +173,42 @@ func StreamingKeepAliveInterval(cfg *config.SDKConfig) time.Duration {
 		return 0
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+// StreamingSendKeepAliveBeforeFT returns whether SSE keep-alives should be sent before the first token arrives.
+// It is active only when streaming.send-keepalive-before-ft is true and streaming.keepalive-seconds > 0.
+func StreamingSendKeepAliveBeforeFT(cfg *config.SDKConfig) bool {
+	return cfg != nil && cfg.Streaming.SendKeepAliveBeforeFT && StreamingKeepAliveInterval(cfg) > 0
+}
+
+// NewStreamingKeepAliveTicker returns a ticker channel and a stop function for streaming keep-alives.
+// When interval <= 0, it returns a nil channel and a no-op stop function.
+func NewStreamingKeepAliveTicker(interval time.Duration) (<-chan time.Time, func()) {
+	if interval <= 0 {
+		return nil, func() {}
+	}
+	return streamingKeepAliveTickerFactory(interval)
+}
+
+// NewPreFirstTokenKeepAliveTicker returns a ticker channel and a stop function for pre-first-token SSE keep-alives.
+// It is active only when streaming.send-keepalive-before-ft is true and streaming.keepalive-seconds > 0.
+func NewPreFirstTokenKeepAliveTicker(cfg *config.SDKConfig) (<-chan time.Time, func()) {
+	if !StreamingSendKeepAliveBeforeFT(cfg) {
+		return nil, func() {}
+	}
+	return NewStreamingKeepAliveTicker(StreamingKeepAliveInterval(cfg))
+}
+
+// SetStreamingKeepAliveTickerFactoryForTest overrides the keep-alive ticker factory for deterministic tests
+// and returns a restore function.
+func SetStreamingKeepAliveTickerFactoryForTest(factory func(interval time.Duration) (<-chan time.Time, func())) func() {
+	prev := streamingKeepAliveTickerFactory
+	if factory != nil {
+		streamingKeepAliveTickerFactory = factory
+	}
+	return func() {
+		streamingKeepAliveTickerFactory = prev
+	}
 }
 
 // NonStreamingKeepAliveInterval returns the keep-alive interval for non-streaming responses.

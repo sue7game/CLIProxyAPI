@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 type application struct {
@@ -71,6 +71,9 @@ func (a *application) configure(raw []byte) error {
 	a.configMu.Lock()
 	if a.baseSet && guardConfigsEqual(a.baseConfig, config) {
 		a.configMu.Unlock()
+		if !config.Enabled {
+			return a.cleanupDisabledRuntimeLocked()
+		}
 		return nil
 	}
 	previous := a.config
@@ -78,9 +81,8 @@ func (a *application) configure(raw []byte) error {
 	a.baseSet = true
 	a.config = config
 	a.configMu.Unlock()
-	if previous.Enabled && !config.Enabled {
-		_ = a.guard.clearAutomaticOverridesLocked()
-		a.guard.clearManagedProxiesLocked()
+	if !config.Enabled {
+		return a.cleanupDisabledRuntimeLocked()
 	} else if previous.Auto429Enabled && !config.Auto429Enabled {
 		_ = a.guard.clearAutomaticOverridesLocked()
 	}

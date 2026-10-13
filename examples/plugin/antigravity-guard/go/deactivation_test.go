@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func TestPluginDeactivationClearsCooldownAndManagedProxy(t *testing.T) {
@@ -143,13 +143,15 @@ func TestPluginDeactivationRetriesManagedProxyCleanupAfterHostError(t *testing.T
 	}
 	host.setOverrideError(errors.New("temporary override failure"))
 
-	configurePluginEnabled(t, app, false)
+	if errConfigure := configurePluginEnabledResult(app, false); errConfigure == nil {
+		t.Fatal("deactivation did not report failed proxy cleanup")
+	}
 	if managed := app.store.snapshot("ag-proxy-retry", now).ManagedProxy; managed == nil {
 		t.Fatal("failed proxy cleanup discarded retry tracking")
 	}
 
 	host.setOverrideError(nil)
-	app.guard.retryManagedProxyCleanup(now.Add(testConfig().RestoreRetry))
+	configurePluginEnabled(t, app, false)
 
 	if managed := app.store.snapshot("ag-proxy-retry", now).ManagedProxy; managed != nil {
 		t.Fatalf("retried proxy cleanup retained managed state: %#v", managed)
@@ -168,17 +170,21 @@ func TestPluginDeactivationRetriesManagedProxyCleanupAfterHostError(t *testing.T
 
 func configurePluginEnabled(t *testing.T, app *application, enabled bool) {
 	t.Helper()
+	if errConfigure := configurePluginEnabledResult(app, enabled); errConfigure != nil {
+		t.Fatal(errConfigure)
+	}
+}
+
+func configurePluginEnabledResult(app *application, enabled bool) error {
 	configYAML := []byte("enabled: false\n")
 	if enabled {
 		configYAML = []byte("enabled: true\n")
 	}
 	raw, errMarshal := json.Marshal(lifecycleRequest{ConfigYAML: configYAML})
 	if errMarshal != nil {
-		t.Fatal(errMarshal)
+		return errMarshal
 	}
-	if errConfigure := app.configure(raw); errConfigure != nil {
-		t.Fatal(errConfigure)
-	}
+	return app.configure(raw)
 }
 
 func quota429Usage(authIndex string) pluginapi.UsageRecord {

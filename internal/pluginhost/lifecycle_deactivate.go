@@ -5,8 +5,8 @@ import (
 	"context"
 	"sort"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -18,6 +18,7 @@ type pluginDeactivationTarget struct {
 	loaded     *loadedPlugin
 	client     pluginClient
 	configYAML []byte
+	runtime    *pluginRuntimeState
 }
 
 func (h *Host) activePluginDeactivationTargets(items map[string]runtimeItemConfig) map[string]pluginDeactivationTarget {
@@ -87,12 +88,16 @@ func (h *Host) deactivatePlugins(ctx context.Context, targets map[string]pluginD
 		if !h.deactivatePlugin(ctx, target) {
 			continue
 		}
-		h.mu.Lock()
-		if pending, ok := h.deactivationPending[id]; ok && pending.loaded == target.loaded {
-			delete(h.deactivationPending, id)
-		}
-		h.mu.Unlock()
+		// Keep callbacks available until plugin-owned runtime overrides are cleared.
+		h.detachPlugin(ctx, id)
 	}
+}
+
+func (h *Host) pluginDeactivationPending(id string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	target, ok := h.deactivationPending[id]
+	return ok && target.loaded == h.loaded[id]
 }
 
 func (h *Host) cancelPluginDeactivation(targets map[string]pluginDeactivationTarget, id string) {

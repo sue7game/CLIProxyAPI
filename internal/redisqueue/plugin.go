@@ -7,9 +7,10 @@ import (
 	"strings"
 	"time"
 
-	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	"github.com/google/uuid"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	coresession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 func init() {
@@ -52,7 +53,27 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		authType = "unknown"
 	}
 	apiKey := strings.TrimSpace(record.APIKey)
+	accessProvider := strings.TrimSpace(record.AccessProvider)
+	if accessProvider == "" {
+		accessProvider = strings.TrimSpace(coreusage.AccessProviderFromContext(ctx))
+	}
+	isNativeKey := record.IsNativeKey
+	if !isNativeKey {
+		if nativeExplicit, ok := coreusage.IsNativeKeyFromContext(ctx); ok {
+			isNativeKey = nativeExplicit
+		} else if accessProvider != "" {
+			isNativeKey = coreusage.IsNativeAccessProvider(accessProvider)
+		}
+	}
 	requestID := strings.TrimSpace(internallogging.GetRequestID(ctx))
+	traceID := strings.TrimSpace(record.TraceID)
+	if traceID == "" {
+		traceID = requestID
+	}
+	executionID := strings.TrimSpace(record.RequestID)
+	if executionID == "" {
+		executionID = uuid.NewString()
+	}
 	reasoningEffort := strings.TrimSpace(record.ReasoningEffort)
 	if reasoningEffort == "" {
 		reasoningEffort = coreusage.ReasoningEffortFromContext(ctx)
@@ -134,7 +155,11 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		Endpoint:            resolveEndpoint(ctx),
 		AuthType:            authType,
 		APIKey:              apiKey,
+		IsNativeKey:         isNativeKey,
+		AccessProvider:      accessProvider,
 		RequestID:           requestID,
+		ExecutionID:         executionID,
+		TraceID:             traceID,
 		SessionID:           sessionID,
 		ParentSessionID:     parentSessionID,
 		NodeKind:            strings.TrimSpace(clientRequestMetadata.NodeKind),
@@ -162,7 +187,11 @@ type queuedUsageDetail struct {
 	Endpoint            string                   `json:"endpoint"`
 	AuthType            string                   `json:"auth_type"`
 	APIKey              string                   `json:"api_key"`
+	IsNativeKey         bool                     `json:"is_native_key"`
+	AccessProvider      string                   `json:"access_provider,omitempty"`
 	RequestID           string                   `json:"request_id"`
+	ExecutionID         string                   `json:"execution_id,omitempty"`
+	TraceID             string                   `json:"trace_id,omitempty"`
 	SessionID           string                   `json:"session_id,omitempty"`
 	ParentSessionID     string                   `json:"parent_session_id,omitempty"`
 	NodeKind            string                   `json:"node_kind,omitempty"`
