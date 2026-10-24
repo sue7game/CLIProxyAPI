@@ -393,10 +393,16 @@ func TestBuildErrorResponseBodyWithError_TerminalAuthEnforcesContractOnJSONInput
 		t.Fatalf("message = %q, want extracted upstream message", payload.Error.Message)
 	}
 
-	// Non-terminal error with JSON errText preserves original JSON.
+	// Non-terminal JSON retains its classification and appends the status hint.
 	normalBody := BuildErrorResponseBodyWithError(http.StatusInternalServerError, jsonErrText, errors.New("normal error"))
-	if string(normalBody) != jsonErrText {
-		t.Fatalf("expected untouched JSON for non-terminal error, got %s", string(normalBody))
+	if errUnmarshal := json.Unmarshal(normalBody, &payload); errUnmarshal != nil {
+		t.Fatalf("unmarshal non-terminal error body: %v", errUnmarshal)
+	}
+	if payload.Error.Type != "server_error" || payload.Error.Code != "internal_server_error" {
+		t.Fatalf("non-terminal classification changed: %s", normalBody)
+	}
+	if payload.Error.Message != "token refresh failed: revoked\n网络错误，请重试" {
+		t.Fatalf("non-terminal message = %q", payload.Error.Message)
 	}
 }
 
@@ -430,7 +436,7 @@ func TestBuildErrorResponseBody_CompactsPrettyPrintedJSON(t *testing.T) {
 	if strings.Contains(string(body), "\n") {
 		t.Fatalf("expected compacted JSON without newlines for SSE compatibility, got:\n%s", string(body))
 	}
-	expected := `{"error":{"code":500,"message":"Internal error encountered.","status":"INTERNAL"}}`
+	expected := `{"error":{"code":500,"message":"Internal error encountered.\n网络错误，请重试","status":"INTERNAL"}}`
 	if string(body) != expected {
 		t.Fatalf("body = %s, want %s", string(body), expected)
 	}

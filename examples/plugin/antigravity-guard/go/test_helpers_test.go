@@ -14,6 +14,12 @@ type fakeHost struct {
 	overrideErrors   []error
 	requestResponse  hostAuthResponse
 	requestError     error
+	requestResults   map[string]fakeAuthResult
+}
+
+type fakeAuthResult struct {
+	response hostAuthResponse
+	err      error
 }
 
 func (h *fakeHost) ListAuths() ([]hostAuthEntry, error) {
@@ -83,6 +89,9 @@ func (h *fakeHost) Request(request hostAuthRequest) (hostAuthResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.authRequests = append(h.authRequests, request)
+	if result, ok := h.requestResults[request.URL]; ok {
+		return result.response, result.err
+	}
 	return h.requestResponse, h.requestError
 }
 

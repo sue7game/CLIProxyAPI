@@ -64,6 +64,7 @@ func (s *quotaService) refresh(authIndex, projectID, hostCallbackID string) (wee
 	if errValidate != nil {
 		return weeklyQuotaResult{}, errValidate
 	}
+	defer s.refreshSubscription(authIndex, hostCallbackID)
 	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
 		errProject := fmt.Errorf("Antigravity credential does not contain project_id")

@@ -906,8 +906,9 @@ func TestXAIImagesRoutesWithPrefixedModelWhenForceModelPrefixEnabled(t *testing.
 		if resp.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusBadRequest, resp.Body.String())
 		}
-		if got := gjson.GetBytes(resp.Body.Bytes(), "error.message").String(); got != "unknown provider for model grok-imagine-image-2.0" {
-			t.Fatalf("error.message = %q, want %q", got, "unknown provider for model grok-imagine-image-2.0")
+		wantMessage := "unknown provider for model grok-imagine-image-2.0\n请求格式、参数或上下文不符合要求，或请求内容包含敏感信息"
+		if got := gjson.GetBytes(resp.Body.Bytes(), "error.message").String(); got != wantMessage {
+			t.Fatalf("error.message = %q, want %q", got, wantMessage)
 		}
 		if len(executor.Calls()) != before {
 			t.Fatalf("expected no executor call for unprefixed model")
@@ -991,8 +992,9 @@ func TestXAIImagesSupportsBuiltInPrefixFallbackAndCustomCredentialPrefix(t *test
 		if resp.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusBadRequest, resp.Body.String())
 		}
-		if got := gjson.GetBytes(resp.Body.Bytes(), "error.message").String(); got != "unknown provider for model xai/grok-imagine-image-2.0" {
-			t.Fatalf("error.message = %q, want %q", got, "unknown provider for model xai/grok-imagine-image-2.0")
+		wantMessage := "unknown provider for model xai/grok-imagine-image-2.0\n请求格式、参数或上下文不符合要求，或请求内容包含敏感信息"
+		if got := gjson.GetBytes(resp.Body.Bytes(), "error.message").String(); got != wantMessage {
+			t.Fatalf("error.message = %q, want %q", got, wantMessage)
 		}
 		if len(executor.Calls()) != 0 {
 			t.Fatalf("expected no executor call, got %d", len(executor.Calls()))

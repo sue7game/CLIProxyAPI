@@ -6,7 +6,7 @@ import (
 	"net/http"
 )
 
-//go:embed web/index.html web/styles.css web/settings.css web/credentials.css web/api.js web/format.js web/search.js web/proxy.js web/bulk-quota.js web/settings.js web/codex.js web/app.js web/bulk-quota-init.js
+//go:embed web/index.html web/styles.css web/settings.css web/credentials.css web/api.js web/format.js web/search.js web/proxy.js web/bulk-quota.js web/settings.js web/codex.js web/credentials.js web/app.js web/bulk-quota-init.js
 var webAssets embed.FS
 
 func managementRoutes() managementRegistration {
@@ -32,6 +32,7 @@ func managementRoutes() managementRegistration {
 			{Path: "/assets/bulk-quota.js", Description: "Antigravity Guard serial bulk quota helper."},
 			{Path: "/assets/settings.js", Description: "Antigravity Guard runtime settings helpers."},
 			{Path: "/assets/codex.js", Description: "Codex credential status and recovery controls."},
+			{Path: "/assets/credentials.js", Description: "Antigravity credential rows and subscription display."},
 			{Path: "/assets/app.js", Description: "Antigravity Guard client."},
 			{Path: "/assets/bulk-quota-init.js", Description: "Antigravity Guard bulk quota UI wiring."},
 		},
@@ -63,6 +64,8 @@ func resourceResponse(path string) (managementResponse, error) {
 		assetPath, contentType = "web/settings.js", "text/javascript; charset=utf-8"
 	case resourceBasePath + "/assets/codex.js":
 		assetPath, contentType = "web/codex.js", "text/javascript; charset=utf-8"
+	case resourceBasePath + "/assets/credentials.js":
+		assetPath, contentType = "web/credentials.js", "text/javascript; charset=utf-8"
 	case resourceBasePath + "/assets/app.js":
 		assetPath, contentType = "web/app.js", "text/javascript; charset=utf-8"
 	case resourceBasePath + "/assets/bulk-quota-init.js":

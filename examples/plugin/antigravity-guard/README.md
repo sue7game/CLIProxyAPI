@@ -29,6 +29,12 @@
 
 Outside weekly quarantine, `action: disable` is the only mode that guarantees the exhausted credential stops receiving new local routing requests. When using `action: priority`, set `temporary_priority` lower than every credential that should be deprioritized; the value is applied exactly and is not calculated from the configured priority. Priority mode redirects traffic only when another compatible credential has a higher effective priority. If no better credential is available, the cooled credential can still be selected.
 
+### Subscription information
+
+Every quota refresh also queries `loadCodeAssist` once through the same credential-scoped host request and effective proxy. The credential details show Free, Pro, Ultra, Ultra Lite, or the upstream name/ID for an unknown plan. A paid tier takes precedence over the current tier when its ID is present.
+
+Subscription and quota results are independent: a subscription failure does not fail a successful quota refresh, and a quota failure does not prevent the subscription query. Failed subscription updates retain the last successful result and show a separate warning. Missing tier data is not treated as Free. Subscription data stays in memory, does not change routing, and is cleared when the plugin restarts. Dashboard polling only reads cached data; it does not query upstream.
+
 ### Weekly quota marker
 
 The management page fetches quota when **Get quota** is selected for a credential. Automatic 429 protection also performs one quota check when a credential reaches the configured consecutive threshold and does not repeat that check while the credential already has an active or pending cooldown. Both paths use the same Antigravity quota-summary endpoints and request shape as the CLIProxyAPI Management Center.

@@ -6,18 +6,15 @@ const {
   sourceLabel,
   esc,
   isWeeklyQuarantine,
-  credentialRoutingState,
   matchesCredentialStatus,
   isCredentialInUse,
-  isActiveRateLimited,
   sortCredentials,
-  renderCooldownCell,
-  renderWeeklyCell,
 } = globalThis.GuardView;
 const { matchesCredential } = globalThis.GuardSearch;
-const { choicesForCredentials, actionPayload, proxyLabel, createProxyController } = globalThis.GuardProxy;
+const { actionPayload, createProxyController } = globalThis.GuardProxy;
 const { createSettingsController } = globalThis.GuardSettings;
 const { createCodexController } = globalThis.GuardCodex;
+const { renderCredentialRow } = globalThis.GuardCredentials;
 
 const ui = {
   keyPanel: document.querySelector("#keyPanel"),
@@ -153,43 +150,18 @@ function renderCredentials() {
   const credentials = visibleCredentials();
   ui.resultCount.textContent = `${credentials.length} 个结果`;
   ui.empty.hidden = credentials.length > 0;
-  ui.body.innerHTML = credentials.map(renderCredentialRow).join("");
+  const context = {
+    busyAuth: state.busyAuth,
+    selected: state.selected,
+    proxyChoices: state.proxyChoices,
+    credentials: state.data.credentials,
+    configuration: state.data.configuration,
+    loadedAt: state.loadedAt,
+  };
+  ui.body.innerHTML = credentials.map((item) => renderCredentialRow(item, context)).join("");
   const visibleSelected = credentials.filter((item) => state.selected.has(item.auth_index)).length;
   ui.selectVisible.checked = credentials.length > 0 && visibleSelected === credentials.length;
   ui.selectVisible.indeterminate = visibleSelected > 0 && visibleSelected < credentials.length;
-}
-
-function proxyChoiceOptions(item) {
-  const selected = state.proxyChoices.get(item.auth_index) || "";
-  return choicesForCredentials(state.data?.credentials).map((option) =>
-    `<option value="${esc(option.value)}" ${selected === option.value ? "selected" : ""}>${esc(option.label)}</option>`).join("");
-}
-
-function renderCredentialRow(item) {
-  const busy = state.busyAuth.has(item.auth_index);
-  const cooldown = item.cooldown;
-  const routingState = credentialRoutingState(item);
-  const rowClass = isActiveRateLimited(item) ? "credential-rate-limited" : "";
-  const priorityChanged = item.configured_priority !== item.effective_priority;
-  const route = item.effective_disabled
-    ? `<span class="badge bad">已禁用</span><span class="subtle">优先级 ${item.configured_priority}${priorityChanged ? ` → ${item.effective_priority}` : ""}</span>`
-    : `<span class="priority ${priorityChanged ? "changed" : ""}">${item.configured_priority}${priorityChanged ? ` → ${item.effective_priority}` : ""}</span>`;
-  const cooldownCell = renderCooldownCell(item, state.data?.configuration, state.loadedAt);
-  const weeklyCell = renderWeeklyCell(item, state.loadedAt);
-  const lastActivity = item.last_request
-    ? `${new Date(item.last_request).toLocaleString()}${item.last_model ? ` · ${item.last_model}` : ""}`
-    : "本进程未使用";
-  const releaseLabel = isWeeklyQuarantine(cooldown) ? "解除隔离" : "解除冷却";
-  return `<tr class="${rowClass}" data-routing-state="${routingState}">
-    <td class="check-cell"><input class="row-select" type="checkbox" data-auth="${esc(item.auth_index)}" ${state.selected.has(item.auth_index) ? "checked" : ""} aria-label="选择 ${esc(item.name)}"></td>
-    <td><span class="credential-name">${esc(item.name)}</span><span class="subtle">${esc(item.email || item.label || item.auth_index)}</span></td>
-    <td><div class="cell-stack">${route}<span class="subtle">${esc(item.status || "unknown")}</span></div></td>
-    <td><div class="cell-stack">${cooldownCell}</div></td>
-    <td><div class="cell-stack">${weeklyCell}</div></td>
-    <td><span class="proxy-value">${esc(proxyLabel(item))}</span><div class="proxy-picker"><select class="proxy-choice" data-auth="${esc(item.auth_index)}" aria-label="为 ${esc(item.name)} 选择代理" ${busy ? "disabled" : ""}>${proxyChoiceOptions(item)}</select><button class="button secondary small" data-action="apply-proxy-choice" data-auth="${esc(item.auth_index)}" ${busy ? "disabled" : ""}>应用</button></div></td>
-    <td><span class="usage-line">成功 <strong>${item.usage?.success || 0}</strong> · 失败 ${item.usage?.failed || 0} · 429 ${item.usage?.rate_limited || 0}</span><span class="subtle">${esc(lastActivity)}</span></td>
-    <td><div class="actions"><button class="button secondary small" data-action="quota" data-auth="${esc(item.auth_index)}" ${busy ? "disabled" : ""}>${busy ? "获取中" : "获取额度"}</button>${cooldown ? `<button class="button danger small" data-action="clear-cooldown" data-auth="${esc(item.auth_index)}" ${busy ? "disabled" : ""}>${releaseLabel}</button>` : ""}<button class="button secondary small" data-action="manual-recover" data-auth="${esc(item.auth_index)}" ${busy ? "disabled" : ""}>${busy ? "恢复中" : "手动恢复"}</button></div></td>
-  </tr>`;
 }
 
 function visibleCredentials() {
@@ -222,6 +194,9 @@ async function credentialAction(action, authIndex) {
     showToast(action === "quota" ? "额度已刷新" : action === "manual-recover" ? "凭证状态已恢复" : weeklyQuarantine ? "隔离已解除" : "冷却已解除");
     await loadState({ force: true });
   } catch (error) {
+    if (action === "quota" && error.status !== 401 && error.status !== 403) {
+      await loadState({ silent: true, force: true });
+    }
     handleAPIError(error);
   } finally {
     state.busyAuth.delete(authIndex);

@@ -52,6 +52,7 @@ type credentialView struct {
 	QuotaError         string            `json:"quota_error,omitempty"`
 	DetailError        string            `json:"detail_error,omitempty"`
 	Codex              *codexView        `json:"codex,omitempty"`
+	Subscription       *subscriptionView `json:"subscription,omitempty"`
 }
 
 type codexView struct {

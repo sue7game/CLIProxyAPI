@@ -92,8 +92,9 @@ func TestClaudeIncompleteStreamError(t *testing.T) {
 			if got := gjson.Get(body, "error.type").String(); got != "timeout_error" {
 				t.Errorf("error.type = %q, want timeout_error", got)
 			}
-			if got := gjson.Get(body, "error.message").String(); got != message {
-				t.Errorf("error.message = %q, want %q", got, message)
+			wantMessage := message + "\n请求已中断或超时"
+			if got := gjson.Get(body, "error.message").String(); got != wantMessage {
+				t.Errorf("error.message = %q, want %q", got, wantMessage)
 			}
 		})
 	}
@@ -258,7 +259,7 @@ func TestWriteClaudeErrorResponseUsesClaudeEnvelope(t *testing.T) {
 	if got := gjson.GetBytes(body, "error.type").String(); got != "invalid_request_error" {
 		t.Fatalf("error.type = %q, want invalid_request_error; body=%s", got, body)
 	}
-	if got := gjson.GetBytes(body, "error.message").String(); got != "Your input exceeds the context window of this model. Please adjust your input and try again." {
+	if got := gjson.GetBytes(body, "error.message").String(); got != "Your input exceeds the context window of this model. Please adjust your input and try again.\n请求格式、参数或上下文不符合要求，或请求内容包含敏感信息" {
 		t.Fatalf("error.message = %q; body=%s", got, body)
 	}
 }

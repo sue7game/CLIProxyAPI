@@ -208,11 +208,13 @@ func TestManagementQuotaPropagatesHostCallbackID(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("quota status = %d, body=%s", response.StatusCode, response.Body)
 	}
-	if len(host.authRequests) != 1 {
-		t.Fatalf("auth request count = %d, want 1", len(host.authRequests))
+	if len(host.authRequests) != 2 {
+		t.Fatalf("auth request count = %d, want quota and subscription", len(host.authRequests))
 	}
-	if got := host.authRequests[0].HostCallbackID; got != "management-callback-123" {
-		t.Fatalf("host callback ID = %q, want management-callback-123", got)
+	for _, request := range host.authRequests {
+		if got := request.HostCallbackID; got != "management-callback-123" {
+			t.Fatalf("host callback ID = %q, want management-callback-123", got)
+		}
 	}
 }
 
@@ -246,6 +248,7 @@ func TestEmbeddedManagementAssetsAreServedWithSecurityHeaders(t *testing.T) {
 		"/assets/proxy.js":        "text/javascript; charset=utf-8",
 		"/assets/settings.js":     "text/javascript; charset=utf-8",
 		"/assets/codex.js":        "text/javascript; charset=utf-8",
+		"/assets/credentials.js":  "text/javascript; charset=utf-8",
 		"/assets/app.js":          "text/javascript; charset=utf-8",
 	}
 	for path, contentType := range tests {

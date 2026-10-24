@@ -316,7 +316,7 @@ func TestQuotaRefreshUsesCredentialProjectAndTokenPlaceholder(t *testing.T) {
 	if _, errRefresh := service.refresh("ag-1", "project-123", "callback-123"); errRefresh != nil {
 		t.Fatal(errRefresh)
 	}
-	if len(host.authRequests) != 1 {
+	if len(host.authRequests) != 2 {
 		t.Fatalf("request count = %d", len(host.authRequests))
 	}
 	request := host.authRequests[0]

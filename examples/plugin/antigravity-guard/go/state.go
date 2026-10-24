@@ -66,6 +66,7 @@ type credentialState struct {
 	Codex                codexQuotaState
 	Cooldown             cooldownState
 	Quota                quotaState
+	Subscription         subscriptionState
 	ManagedProxy         *string
 	ManagedProxyRevision uint64
 }

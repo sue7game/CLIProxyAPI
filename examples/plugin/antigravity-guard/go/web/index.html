@@ -140,7 +140,7 @@
         <div>
           <p class="section-kicker">批量操作</p>
           <h2 id="bulkTitle"><span id="selectedCount">0</span> 个凭证已选择</h2>
-          <p class="runtime-note">代理仅修改当前进程；批量额度按 3 秒间隔逐个获取，不会并发请求。</p>
+          <p class="runtime-note">获取额度时同步查询订阅；批量按 3 秒间隔逐个获取，不会并发请求。代理仅修改当前进程。</p>
         </div>
         <div class="bulk-controls">
           <input id="proxyInput" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="http://user:pass@host:port 或 socks5://..." aria-label="代理地址">
@@ -187,7 +187,7 @@
             <thead>
               <tr>
                 <th class="check-cell"><input id="selectVisible" type="checkbox" aria-label="选择当前筛选结果"></th>
-                <th>凭证</th>
+                <th>凭证 / 订阅</th>
                 <th>路由</th>
                 <th>429 状态</th>
                 <th>周限</th>
@@ -243,6 +243,7 @@
   <script src="./assets/bulk-quota.js" defer></script>
   <script src="./assets/settings.js" defer></script>
   <script src="./assets/codex.js" defer></script>
+  <script src="./assets/credentials.js" defer></script>
   <script src="./assets/app.js" defer></script>
   <script src="./assets/bulk-quota-init.js" defer></script>
 </body>

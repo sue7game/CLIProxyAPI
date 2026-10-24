@@ -339,6 +339,7 @@ func writeResponsesWebsocketTerminalError(
 		}
 	}
 
+	payload = handlers.AppendErrorMessageHint(responsesWebsocketErrorStatus(errMsg), payload)
 	wrote, errClose := writer.closeWithPayload(payload)
 	if wrote && wsTimelineLog != nil {
 		wsTimelineLog.Append("response", payload, time.Now())

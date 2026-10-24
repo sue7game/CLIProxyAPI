@@ -5,7 +5,6 @@ package handlers
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -63,101 +62,6 @@ const (
 	maxStreamInterceptorHistoryChunks = 64
 	maxStreamInterceptorHistoryBytes  = 1 << 20
 )
-
-// BuildErrorResponseBody builds an OpenAI-compatible JSON error response body.
-// If errText is already valid JSON, it is compacted to ensure single-line SSE compatibility
-// while preserving upstream error payloads.
-func BuildErrorResponseBody(status int, errText string) []byte {
-	return BuildErrorResponseBodyWithError(status, errText, nil)
-}
-
-// BuildErrorResponseBodyWithError builds an OpenAI-compatible JSON error response body,
-// preserving structured classifications (such as terminal upstream auth failures and retryable flags)
-// present in err.
-func BuildErrorResponseBodyWithError(status int, errText string, err error) []byte {
-	if status <= 0 {
-		status = http.StatusInternalServerError
-	}
-	if strings.TrimSpace(errText) == "" {
-		errText = http.StatusText(status)
-	}
-
-	trimmed := strings.TrimSpace(errText)
-
-	if coreauth.IsTerminalAuthError(err) {
-		message := errText
-		if trimmed != "" && json.Valid([]byte(trimmed)) {
-			var parsed map[string]any
-			if errUnmarshal := json.Unmarshal([]byte(trimmed), &parsed); errUnmarshal == nil {
-				if msg, ok := parsed["message"].(string); ok && msg != "" {
-					message = msg
-				} else if errMap, ok := parsed["error"].(map[string]any); ok {
-					if msg, ok := errMap["message"].(string); ok && msg != "" {
-						message = msg
-					}
-				}
-			}
-		}
-		r := false
-		payload, errMarshal := json.Marshal(ErrorResponse{
-			Error: ErrorDetail{
-				Message:   message,
-				Type:      "authentication_error",
-				Code:      "upstream_authentication_required",
-				Retryable: &r,
-			},
-		})
-		if errMarshal != nil {
-			return []byte(fmt.Sprintf(`{"error":{"message":%q,"type":"authentication_error","code":"upstream_authentication_required","retryable":false}}`, message))
-		}
-		return payload
-	}
-
-	if trimmed != "" && json.Valid([]byte(trimmed)) {
-		var compact bytes.Buffer
-		if errCompact := json.Compact(&compact, []byte(trimmed)); errCompact == nil {
-			return compact.Bytes()
-		}
-		return []byte(trimmed)
-	}
-
-	errType := "invalid_request_error"
-	var code string
-	switch status {
-	case http.StatusUnauthorized:
-		errType = "authentication_error"
-		code = "invalid_api_key"
-	case http.StatusForbidden:
-		errType = "permission_error"
-		code = "insufficient_quota"
-	case http.StatusTooManyRequests:
-		errType = "rate_limit_error"
-		code = "rate_limit_exceeded"
-	case http.StatusNotFound:
-		errType = "invalid_request_error"
-		code = "model_not_found"
-	case http.StatusRequestTimeout:
-		errType = "server_error"
-		code = "request_timeout"
-	default:
-		if status >= http.StatusInternalServerError {
-			errType = "server_error"
-			code = "internal_server_error"
-		}
-	}
-
-	payload, errMarshal := json.Marshal(ErrorResponse{
-		Error: ErrorDetail{
-			Message: errText,
-			Type:    errType,
-			Code:    code,
-		},
-	})
-	if errMarshal != nil {
-		return []byte(fmt.Sprintf(`{"error":{"message":%q,"type":"server_error","code":"internal_server_error"}}`, errText))
-	}
-	return appendErrorMessageHint(status, payload)
-}
 
 var streamingKeepAliveTickerFactory = func(interval time.Duration) (<-chan time.Time, func()) {
 	ticker := time.NewTicker(interval)

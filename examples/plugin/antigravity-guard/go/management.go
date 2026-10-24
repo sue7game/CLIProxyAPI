@@ -110,6 +110,7 @@ func (a *application) quotaResponse(raw []byte, hostCallbackID string) managemen
 	return jsonResponse(http.StatusOK, map[string]any{
 		"auth_index":   entry.AuthIndex,
 		"weekly_quota": weeklyViewFromState(state.Quota, a.auth.now()),
+		"subscription": subscriptionViewFromState(state.Subscription),
 		"found":        result.Found,
 	})
 }
