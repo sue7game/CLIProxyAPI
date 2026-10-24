@@ -20,6 +20,13 @@ models:
   codex-catalog: ""
   devin-catalog: ""
 
+# Optional credential/token access groups. Home cannot be combined with grouping.
+# Keep disabled until initialization in the management interface is complete.
+grouping:
+  enabled: false
+  # Store, signing key, lock, and recovery journals must be backed up together.
+  store-path: ""
+
 # Listener, TLS, network discovery, and server operation.
 server:
   # Server host/interface to bind to. Default is empty ("") to bind all interfaces (IPv4 + IPv6).

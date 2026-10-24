@@ -46,30 +46,34 @@ func (a *application) handleManagement(raw []byte) ([]byte, error) {
 func (a *application) dispatchManagement(request managementRequest) managementResponse {
 	switch request.Method + " " + request.Path {
 	case http.MethodGet + " " + managementAPIPath + "/state":
-		return a.stateResponse()
+		return a.stateResponse(request.HostCallbackID)
 	case http.MethodPost + " " + managementAPIPath + "/quota/refresh":
 		return a.quotaResponse(request.Body, request.HostCallbackID)
 	case http.MethodPost + " " + managementAPIPath + "/proxy":
-		return a.proxyResponse(request.Body)
+		return a.proxyResponse(request.Body, request.HostCallbackID)
 	case http.MethodPost + " " + managementAPIPath + "/proxy/alias":
-		return a.proxyAliasResponse(request.Body)
+		return a.proxyAliasResponse(request.Body, request.HostCallbackID)
 	case http.MethodPost + " " + managementAPIPath + "/settings":
-		return a.settingsResponse(request.Body)
+		return a.settingsResponse(request.Body, request.HostCallbackID)
 	case http.MethodPost + " " + managementAPIPath + "/cooldown/clear":
-		return a.clearCooldownResponse(request.Body)
+		return a.clearCooldownResponse(request.Body, request.HostCallbackID)
 	case http.MethodPost + " " + managementAPIPath + "/recover":
-		return a.manualRecoverResponse(request.Body)
+		return a.manualRecoverResponse(request.Body, request.HostCallbackID)
 	default:
 		return jsonError(http.StatusNotFound, "management route not found")
 	}
 }
 
-func (a *application) settingsResponse(raw []byte) managementResponse {
+func (a *application) settingsResponse(raw []byte, callbackIDs ...string) managementResponse {
 	settings, errDecode := decodeRuntime429Settings(raw)
 	if errDecode != nil {
 		return jsonError(http.StatusBadRequest, errDecode.Error())
 	}
-	config, cleanup := a.applyRuntime429Settings(settings)
+	host := scopedHostClient(a.host, callbackIDs...)
+	if _, errAccess := host.ListAuths(); errAccess != nil {
+		return jsonError(http.StatusBadGateway, errAccess.Error())
+	}
+	config, cleanup := a.applyRuntime429Settings(settings, host)
 	result := runtime429SettingsResult{configView: configurationView(config)}
 	if cleanup.Attempted > 0 {
 		result.Cleanup = &cleanup
@@ -77,8 +81,10 @@ func (a *application) settingsResponse(raw []byte) managementResponse {
 	return jsonResponse(http.StatusOK, result)
 }
 
-func (a *application) stateResponse() managementResponse {
-	state, errState := a.auth.dashboard()
+func (a *application) stateResponse(callbackIDs ...string) managementResponse {
+	service := *a.auth
+	service.host = scopedHostClient(a.host, callbackIDs...)
+	state, errState := service.dashboard()
 	if errState != nil {
 		return jsonError(http.StatusBadGateway, errState.Error())
 	}
@@ -90,11 +96,13 @@ func (a *application) quotaResponse(raw []byte, hostCallbackID string) managemen
 	if errDecode := json.Unmarshal(raw, &request); errDecode != nil {
 		return jsonError(http.StatusBadRequest, "invalid quota request")
 	}
-	entry, response := a.authorizeTarget(request.AuthIndex)
+	entry, response := a.authorizeTarget(request.AuthIndex, hostCallbackID)
 	if response.StatusCode != 0 {
 		return response
 	}
-	result, errRefresh := a.quota.refresh(entry.AuthIndex, entry.ProjectID, hostCallbackID)
+	service := *a.quota
+	service.host = scopedHostClient(a.host, hostCallbackID)
+	result, errRefresh := service.refresh(entry.AuthIndex, entry.ProjectID, hostCallbackID)
 	if errRefresh != nil {
 		return jsonError(http.StatusBadGateway, errRefresh.Error())
 	}
@@ -106,7 +114,7 @@ func (a *application) quotaResponse(raw []byte, hostCallbackID string) managemen
 	})
 }
 
-func (a *application) proxyResponse(raw []byte) managementResponse {
+func (a *application) proxyResponse(raw []byte, callbackIDs ...string) managementResponse {
 	var request proxyActionRequest
 	if errDecode := json.Unmarshal(raw, &request); errDecode != nil {
 		return jsonError(http.StatusBadRequest, "invalid proxy request")
@@ -115,12 +123,12 @@ func (a *application) proxyResponse(raw []byte) managementResponse {
 	if errIndices != nil {
 		return jsonError(http.StatusBadRequest, errIndices.Error())
 	}
-	proxyURL, clear, response := a.resolveProxyAction(request)
+	proxyURL, clear, response := a.resolveProxyAction(request, callbackIDs...)
 	if response.StatusCode != 0 {
 		return response
 	}
 	for index, authIndex := range authIndices {
-		entry, response := a.authorizeTarget(authIndex)
+		entry, response := a.authorizeTarget(authIndex, callbackIDs...)
 		if response.StatusCode != 0 {
 			return response
 		}
@@ -132,7 +140,7 @@ func (a *application) proxyResponse(raw []byte) managementResponse {
 		if !clear {
 			value = &proxyURL
 		}
-		if errSet := a.guard.setProxy(authIndex, value); errSet != nil {
+		if errSet := a.guard.setProxy(authIndex, value, scopedHostClient(a.host, callbackIDs...)); errSet != nil {
 			result.Failed[authIndex] = errSet.Error()
 			continue
 		}
@@ -145,7 +153,7 @@ func (a *application) proxyResponse(raw []byte) managementResponse {
 	return jsonResponse(http.StatusMultiStatus, result)
 }
 
-func (a *application) resolveProxyAction(request proxyActionRequest) (string, bool, managementResponse) {
+func (a *application) resolveProxyAction(request proxyActionRequest, callbackIDs ...string) (string, bool, managementResponse) {
 	if !strings.EqualFold(strings.TrimSpace(request.Mode), "copy") {
 		proxyURL, clear, errAction := proxyAction(request)
 		if errAction != nil {
@@ -154,7 +162,7 @@ func (a *application) resolveProxyAction(request proxyActionRequest) (string, bo
 		return proxyURL, clear, managementResponse{}
 	}
 
-	source, response := a.authorizeTarget(request.SourceAuthIndex)
+	source, response := a.authorizeTarget(request.SourceAuthIndex, callbackIDs...)
 	if response.StatusCode != 0 {
 		return "", false, response
 	}
@@ -169,42 +177,42 @@ func (a *application) resolveProxyAction(request proxyActionRequest) (string, bo
 	return validated, false, managementResponse{}
 }
 
-func (a *application) clearCooldownResponse(raw []byte) managementResponse {
+func (a *application) clearCooldownResponse(raw []byte, callbackIDs ...string) managementResponse {
 	var request authIndexRequest
 	if errDecode := json.Unmarshal(raw, &request); errDecode != nil {
 		return jsonError(http.StatusBadRequest, "invalid cooldown request")
 	}
-	entry, response := a.authorizeTarget(request.AuthIndex)
+	entry, response := a.authorizeTarget(request.AuthIndex, callbackIDs...)
 	if response.StatusCode != 0 {
 		return response
 	}
-	if errClear := a.guard.clearCooldown(entry.AuthIndex); errClear != nil {
+	if errClear := a.guard.clearCooldown(entry.AuthIndex, scopedHostClient(a.host, callbackIDs...)); errClear != nil {
 		return jsonError(http.StatusBadGateway, errClear.Error())
 	}
 	return jsonResponse(http.StatusOK, map[string]any{"auth_index": entry.AuthIndex, "cleared": true})
 }
 
-func (a *application) manualRecoverResponse(raw []byte) managementResponse {
+func (a *application) manualRecoverResponse(raw []byte, callbackIDs ...string) managementResponse {
 	var request authIndexRequest
 	if errDecode := json.Unmarshal(raw, &request); errDecode != nil {
 		return jsonError(http.StatusBadRequest, "invalid recovery request")
 	}
-	entry, response := a.authorizeRecoveryTarget(request.AuthIndex)
+	entry, response := a.authorizeRecoveryTarget(request.AuthIndex, callbackIDs...)
 	if response.StatusCode != 0 {
 		return response
 	}
-	if errRecover := a.guard.manualRecover(entry.AuthIndex); errRecover != nil {
+	if errRecover := a.guard.manualRecover(entry.AuthIndex, scopedHostClient(a.host, callbackIDs...)); errRecover != nil {
 		return jsonError(http.StatusBadGateway, errRecover.Error())
 	}
 	return jsonResponse(http.StatusOK, map[string]any{"auth_index": entry.AuthIndex, "recovered": true})
 }
 
-func (a *application) authorizeTarget(rawAuthIndex string) (hostAuthEntry, managementResponse) {
+func (a *application) authorizeTarget(rawAuthIndex string, callbackIDs ...string) (hostAuthEntry, managementResponse) {
 	authIndex, errValidate := validateAuthIndex(rawAuthIndex)
 	if errValidate != nil {
 		return hostAuthEntry{}, jsonError(http.StatusBadRequest, errValidate.Error())
 	}
-	entries, errList := a.host.ListAuths()
+	entries, errList := scopedHostClient(a.host, callbackIDs...).ListAuths()
 	if errList != nil {
 		return hostAuthEntry{}, jsonError(http.StatusBadGateway, errList.Error())
 	}
@@ -220,12 +228,12 @@ func (a *application) authorizeTarget(rawAuthIndex string) (hostAuthEntry, manag
 	return hostAuthEntry{}, jsonError(http.StatusNotFound, "credential not found")
 }
 
-func (a *application) authorizeRecoveryTarget(rawAuthIndex string) (hostAuthEntry, managementResponse) {
+func (a *application) authorizeRecoveryTarget(rawAuthIndex string, callbackIDs ...string) (hostAuthEntry, managementResponse) {
 	authIndex, errValidate := validateAuthIndex(rawAuthIndex)
 	if errValidate != nil {
 		return hostAuthEntry{}, jsonError(http.StatusBadRequest, errValidate.Error())
 	}
-	entries, errList := a.host.ListAuths()
+	entries, errList := scopedHostClient(a.host, callbackIDs...).ListAuths()
 	if errList != nil {
 		return hostAuthEntry{}, jsonError(http.StatusBadGateway, errList.Error())
 	}

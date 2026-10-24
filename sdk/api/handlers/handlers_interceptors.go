@@ -654,6 +654,7 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 	rawResponseHeaders := http.Header{
 		"Content-Type": []string{"application/json; charset=utf-8"},
 	}
+	scopedOriginal := cloneBytes(body)
 
 	var lifecycle *requestLifecycleTracker
 	host := h.interceptorHost()
@@ -691,6 +692,18 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 		}
 	}
 
+	if h.CredentialGroupingEnabled() {
+		var errScope error
+		body, errScope = restrictModelListResponse(scopedOriginal, body)
+		if errScope != nil {
+			lifecycle.complete(pluginapi.RequestCompletionFailed, http.StatusServiceUnavailable, errScope)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "scoped model catalog unavailable"})
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		c.Writer.Header().Del("Content-Length")
+		c.Writer.Header().Del("ETag")
+	}
 	if modelID, detail := c.Get(ModelDetailIDContextKey); detail {
 		c.Writer.Header().Del("Content-Length")
 		var catalog struct {

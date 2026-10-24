@@ -360,6 +360,9 @@ func (h *Host) RefreshAuth(ctx context.Context, auth *coreauth.Auth) (refreshed 
 	if h == nil || auth == nil {
 		return nil, false, nil
 	}
+	if errAccess := h.authorizePluginCredential(ctx, auth); errAccess != nil {
+		return nil, true, errAccess
+	}
 	record := h.authProviderRecord(authProvider(auth))
 	if record == nil || record.plugin.Capabilities.AuthProvider == nil {
 		return nil, false, nil

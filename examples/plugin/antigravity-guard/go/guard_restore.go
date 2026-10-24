@@ -31,7 +31,11 @@ func (s *restoreSummary) add(authIndex, outcome string, err error) {
 }
 
 func (g *guard) authEntry(authIndex string) (hostAuthEntry, error) {
-	entries, errList := g.host.ListAuths()
+	return authEntryFromHost(g.currentHostLocked(), authIndex)
+}
+
+func authEntryFromHost(host hostClient, authIndex string) (hostAuthEntry, error) {
+	entries, errList := host.ListAuths()
 	if errList != nil {
 		return hostAuthEntry{}, fmt.Errorf("list credentials: %w", errList)
 	}
@@ -52,6 +56,8 @@ func (g *guard) restoreDue(now time.Time) {
 }
 
 func (g *guard) reconcileConfiguredDisables(now time.Time) {
+	g.operations.Lock()
+	defer g.operations.Unlock()
 	snapshots := g.store.allSnapshots(now)
 	needsReconcile := false
 	for _, state := range snapshots {
@@ -63,12 +69,10 @@ func (g *guard) reconcileConfiguredDisables(now time.Time) {
 	if !needsReconcile {
 		return
 	}
-	entries, errList := g.host.ListAuths()
+	entries, errList := g.currentHostLocked().ListAuths()
 	if errList != nil {
 		return
 	}
-	g.operations.Lock()
-	defer g.operations.Unlock()
 	for _, entry := range entries {
 		if !entry.ConfiguredDisabled {
 			continue
@@ -154,7 +158,7 @@ func (g *guard) restoreField(task restoreTask, field string) (hostAuthEntry, boo
 	}
 	request.IfRevision = &revision
 	request.IfRevisionField = field
-	response, errSet := g.host.SetRuntimeOverride(request)
+	response, errSet := g.currentHostLocked().SetRuntimeOverride(request)
 	if errSet != nil {
 		return hostAuthEntry{}, false, errSet
 	}
@@ -211,9 +215,12 @@ func restoreOverrideRequest(task restoreTask, field string) (runtimeOverrideRequ
 	}
 }
 
-func (g *guard) clearCooldown(authIndex string) error {
+func (g *guard) clearCooldown(authIndex string, hosts ...hostClient) error {
 	g.operations.Lock()
 	defer g.operations.Unlock()
+	if len(hosts) > 0 {
+		defer g.useHostLocked(hosts[0])()
+	}
 	return g.clearCooldownLocked(authIndex)
 }
 
@@ -233,9 +240,12 @@ func (g *guard) clearCooldownLocked(authIndex string) error {
 
 // manualRecover clears plugin-owned status and routing overrides for one credential.
 // The configured disabled flag remains owned by CPA and is never changed here.
-func (g *guard) manualRecover(authIndex string) error {
+func (g *guard) manualRecover(authIndex string, hosts ...hostClient) error {
 	g.operations.Lock()
 	defer g.operations.Unlock()
+	if len(hosts) > 0 {
+		defer g.useHostLocked(hosts[0])()
+	}
 
 	if errClear := g.clearCooldownLocked(authIndex); errClear != nil {
 		return errClear
@@ -245,7 +255,7 @@ func (g *guard) manualRecover(authIndex string) error {
 		return errEntry
 	}
 	if isCodexEntry(entry) && entry.RuntimeOverride != nil && entry.RuntimeOverride.Disabled != nil && *entry.RuntimeOverride.Disabled {
-		response, errSet := g.host.SetRuntimeOverride(runtimeOverrideRequest{
+		response, errSet := g.currentHostLocked().SetRuntimeOverride(runtimeOverrideRequest{
 			AuthIndex:       authIndex,
 			Clear:           []string{"disabled"},
 			IfRevisionField: "disabled",

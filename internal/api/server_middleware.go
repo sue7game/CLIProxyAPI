@@ -171,7 +171,7 @@ func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "*")
+		c.Header("Access-Control-Allow-Headers", "*, Authorization, Content-Type, If-Match")
 		c.Header("Access-Control-Expose-Headers", corsExposedResponseHeadersJoined)
 
 		if c.Request.Method == "OPTIONS" {
@@ -206,6 +206,7 @@ func accessAuthMiddleware(manager *sdkaccess.Manager, realtimeError bool) gin.Ha
 			if result != nil {
 				c.Set("userApiKey", result.Principal)
 				c.Set("accessProvider", result.Provider)
+				c.Request = c.Request.WithContext(sdkaccess.WithAuthenticatedPrincipal(c.Request.Context(), result.Provider, result.Principal))
 				if len(result.Metadata) > 0 {
 					c.Set("accessMetadata", result.Metadata)
 				}
@@ -274,6 +275,7 @@ func realtimeAuthMiddleware(manager *sdkaccess.Manager, handler *codexlive.Handl
 		reqCtx := coreusage.WithAPIKey(c.Request.Context(), principal)
 		reqCtx = coreusage.WithAccessProvider(reqCtx, provider)
 		reqCtx = coreusage.WithIsNativeKey(reqCtx, coreusage.IsNativeAccessProvider(provider))
+		reqCtx = sdkaccess.WithAuthenticatedPrincipal(reqCtx, authorization.IssuerProvider, authorization.IssuerPrincipal)
 		c.Request = c.Request.WithContext(reqCtx)
 		c.Set(codexlive.ClientSecretSessionContextKey, authorization.Session)
 		c.Set(codexlive.ClientSecretPrincipalContextKey, authorization.Principal)

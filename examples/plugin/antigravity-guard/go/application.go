@@ -54,7 +54,7 @@ func (a *application) handleMethod(method string, request []byte) ([]byte, error
 	}
 }
 
-func (a *application) configure(raw []byte) error {
+func (a *application) configure(raw []byte) (err error) {
 	var request lifecycleRequest
 	if len(raw) > 0 {
 		if errDecode := json.Unmarshal(raw, &request); errDecode != nil {
@@ -67,6 +67,13 @@ func (a *application) configure(raw []byte) error {
 	}
 	a.guard.operations.Lock()
 	defer a.guard.operations.Unlock()
+	defer a.guard.useHostLocked(scopedHostClient(a.host, request.HostCallbackID))()
+	setMaintenanceCallback(a.host, "")
+	defer func() {
+		if err == nil && config.Enabled {
+			setMaintenanceCallback(a.host, request.MaintenanceCallbackID)
+		}
+	}()
 
 	a.configMu.Lock()
 	if a.baseSet && guardConfigsEqual(a.baseConfig, config) {

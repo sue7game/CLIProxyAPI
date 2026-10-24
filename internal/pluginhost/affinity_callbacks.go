@@ -12,10 +12,17 @@ import (
 )
 
 func (h *Host) callHostAffinityLookup(ctx context.Context, request []byte) ([]byte, error) {
-	_ = ctx
-	var req pluginapi.HostAffinityLookupRequest
+	var req struct {
+		pluginapi.HostAffinityLookupRequest
+		HostCallbackID string `json:"host_callback_id,omitempty"`
+	}
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode host affinity lookup request: %w", errUnmarshal)
+	}
+	var errContext error
+	ctx, errContext = h.resolveGroupingCallbackContext(ctx, req.HostCallbackID)
+	if errContext != nil {
+		return nil, errContext
 	}
 	req.Provider = strings.TrimSpace(req.Provider)
 	req.Model = strings.TrimSpace(req.Model)
@@ -47,6 +54,9 @@ func (h *Host) callHostAffinityLookup(ctx context.Context, request []byte) ([]by
 		})
 	}
 
+	if errAccess := h.authorizeHostCredential(ctx, auth); errAccess != nil {
+		return nil, errAccess
+	}
 	auth.EnsureIndex()
 	disabled := auth.Disabled || auth.Status == coreauth.StatusDisabled
 	unavailable := auth.Unavailable || auth.Status == coreauth.StatusError

@@ -100,6 +100,7 @@ func (h *Host) fusePlugin(id, method string, recovered any) {
 	h.mu.Lock()
 	h.fused[id] = fmt.Sprintf("%s panic: %v", method, recovered)
 	h.mu.Unlock()
+	h.revokePluginMaintenance(id)
 	thinking.UnregisterPluginProviders(id)
 	log.WithField("plugin_id", id).WithField("method", method).Errorf("pluginhost: plugin panic recovered: %v\n%s", recovered, debug.Stack())
 }

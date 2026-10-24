@@ -96,6 +96,9 @@ func unwrapExecutionBoundaryError(err error) error {
 }
 
 func preferredExecutionAttemptError(fallback, upstream error) error {
+	if isCredentialAccessError(fallback) {
+		return fallback
+	}
 	if errors.Is(fallback, context.Canceled) || errors.Is(fallback, context.DeadlineExceeded) {
 		return fallback
 	}
@@ -120,6 +123,11 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	var errAccess error
+	ctx, errAccess = m.beginCredentialAccess(ctx)
+	if errAccess != nil {
+		return cliproxyexecutor.Response{}, errAccess
+	}
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
 	normalized := m.normalizeProviders(providers)
@@ -143,7 +151,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		if errExec == nil {
 			return resp, nil
 		}
-		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
+		if isCredentialAccessError(errExec) || isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
 		}
 		if hasUpstreamExecutionAttempt(errExec) {
@@ -180,6 +188,11 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	var errAccess error
+	ctx, errAccess = m.beginCredentialAccess(ctx)
+	if errAccess != nil {
+		return cliproxyexecutor.Response{}, errAccess
+	}
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
 	normalized := m.normalizeProviders(providers)
@@ -203,7 +216,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		if errExec == nil {
 			return resp, nil
 		}
-		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
+		if isCredentialAccessError(errExec) || isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
 		}
 		if hasUpstreamExecutionAttempt(errExec) {
@@ -233,6 +246,12 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	ctx = snapshotCodexClientRequest(ctx, opts.Headers)
+	var errAccess error
+	ctx, errAccess = m.beginCredentialAccess(ctx)
+	if errAccess != nil {
+		return nil, errAccess
+	}
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
 	if m.HomeEnabled() {
@@ -278,7 +297,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		}
 		retryRoundPending = false
 		retryRoundWaited = false
-		if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
+		if isCredentialAccessError(errStream) || isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
 			return nil, unwrapExecutionBoundaryError(errStream)
 		}
 		lastErr = errStream
@@ -540,6 +559,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
+			if isCredentialAccessError(errPrepare) {
+				return cliproxyexecutor.Response{}, errPrepare
+			}
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errPrepare); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
@@ -593,6 +615,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
+			if errAccess := m.AuthorizeCredentialUse(execCtx, auth); errAccess != nil {
+				return cliproxyexecutor.Response{}, errAccess
+			}
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
@@ -604,14 +629,24 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					return cliproxyexecutor.Response{}, errCtx
 				}
 				refreshCtx := newUpstreamAttemptContext(execCtx)
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized, execOpts.Headers); okRefresh {
+				refreshed, okRefresh, errRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized, execOpts.Headers)
+				if errRefresh != nil {
+					return cliproxyexecutor.Response{}, errRefresh
+				}
+				if okRefresh {
 					auth = refreshed
 					didRefreshOnUnauthorized = true
 					execCtx = newUpstreamAttemptContext(execCtx)
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
+					if errAccess := m.AuthorizeCredentialUse(execCtx, auth); errAccess != nil {
+						return cliproxyexecutor.Response{}, errAccess
+					}
 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+					if isCredentialAccessError(errExec) {
+						return cliproxyexecutor.Response{}, errExec
+					}
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -754,6 +789,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
+			if isCredentialAccessError(errPrepare) {
+				return cliproxyexecutor.Response{}, errPrepare
+			}
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errPrepare); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
@@ -807,6 +845,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
+			if errAccess := m.AuthorizeCredentialUse(execCtx, auth); errAccess != nil {
+				return cliproxyexecutor.Response{}, errAccess
+			}
 			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
@@ -818,14 +859,24 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					return cliproxyexecutor.Response{}, errCtx
 				}
 				refreshCtx := newUpstreamAttemptContext(execCtx)
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized, execOpts.Headers); okRefresh {
+				refreshed, okRefresh, errRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized, execOpts.Headers)
+				if errRefresh != nil {
+					return cliproxyexecutor.Response{}, errRefresh
+				}
+				if okRefresh {
 					auth = refreshed
 					didRefreshOnUnauthorized = true
 					execCtx = newUpstreamAttemptContext(execCtx)
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
+					if errAccess := m.AuthorizeCredentialUse(execCtx, auth); errAccess != nil {
+						return cliproxyexecutor.Response{}, errAccess
+					}
 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
+					if isCredentialAccessError(errExec) {
+						return cliproxyexecutor.Response{}, errExec
+					}
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -913,6 +964,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 }
 
 func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, homeRetryLimit *int, retryRound int, defaultRequestRetry int) (*cliproxyexecutor.StreamResult, error) {
+	var errAccess error
+	ctx, errAccess = m.beginCredentialAccess(ctx)
+	if errAccess != nil {
+		return nil, errAccess
+	}
 	if len(providers) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
@@ -1092,6 +1148,13 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		}
 		if errPrepare != nil {
+			if isCredentialAccessError(errPrepare) {
+				if selection != nil {
+					releaseAttempt()
+					selection.End("credential_access_denied")
+				}
+				return nil, errPrepare
+			}
 			if selection != nil {
 				excludeAuth := shouldExcludeHomeAuthAfterStreamError(execCtx, auth, errPrepare)
 				if homeSameAuthRetries[auth.ID] > 0 {
@@ -1180,6 +1243,13 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			pooled = false
 		}
 		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil)
+		if isCredentialAccessError(errStream) {
+			if selection != nil {
+				releaseAttempt()
+				selection.End("credential_access_denied")
+			}
+			return nil, errStream
+		}
 		if errStream != nil {
 			if hasUpstreamExecutionAttempt(errStream) {
 				upstreamErr = errStream
@@ -1503,6 +1573,9 @@ func (m *Manager) prepareHomeAuthSnapshot(ctx context.Context, executor Provider
 		if !preparer.ShouldPrepareRequestAuth(target) {
 			return target, nil
 		}
+		if errAccess := m.AuthorizeCredentialUse(ctx, target); errAccess != nil {
+			return auth, errAccess
+		}
 		updated, errPrepare := preparer.PrepareRequestAuth(ctx, target)
 		if errPrepare != nil {
 			return auth, errPrepare
@@ -1542,6 +1615,9 @@ func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecu
 // PrepareRequestAuth prepares a registered credential using the same serialization
 // and lifecycle checks as normal request execution. Management tools use this path too.
 func (m *Manager) PrepareRequestAuth(ctx context.Context, preparer RequestAuthPreparer, auth *Auth) (*Auth, error) {
+	if errAccess := m.AuthorizeCredentialUse(ctx, auth); errAccess != nil {
+		return auth, errAccess
+	}
 	if m == nil || preparer == nil || auth == nil || !preparer.ShouldPrepareRequestAuth(auth) {
 		return auth, nil
 	}
@@ -1573,12 +1649,18 @@ func (m *Manager) PrepareRequestAuth(ctx context.Context, preparer RequestAuthPr
 	if current == nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "meta") {
 		return nil, fmt.Errorf("prepare meta auth: credential no longer registered")
 	}
+	if errAccess := m.AuthorizeCredentialUse(ctx, target); errAccess != nil {
+		return auth, errAccess
+	}
 
 	if !preparer.ShouldPrepareRequestAuth(target) {
 		return target, nil
 	}
 
 	base := target.Clone()
+	if errAccess := m.AuthorizeCredentialUse(ctx, base); errAccess != nil {
+		return auth, errAccess
+	}
 	updated, errPrepare := preparer.PrepareRequestAuth(ctx, base.Clone())
 	if errPrepare != nil {
 		return auth, errPrepare
@@ -1997,8 +2079,12 @@ func (m *Manager) InjectCredentials(req *http.Request, authID string) error {
 	var exec ProviderExecutor
 	if a != nil {
 		exec, _ = m.executorLocked(executorKeyFromAuth(a))
+		a = a.Clone()
 	}
 	m.mu.RUnlock()
+	if errAccess := m.AuthorizeCredentialUse(req.Context(), a); errAccess != nil {
+		return errAccess
+	}
 	if a == nil || exec == nil {
 		return nil
 	}
@@ -2021,6 +2107,9 @@ func (m *Manager) PrepareHttpRequest(ctx context.Context, auth *Auth, req *http.
 	}
 	if ctx != nil {
 		*req = *req.WithContext(ctx)
+	}
+	if errAccess := m.AuthorizeCredentialUse(req.Context(), auth); errAccess != nil {
+		return errAccess
 	}
 	providerKey := executorKeyFromAuth(auth)
 	if providerKey == "" {
@@ -2073,6 +2162,12 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 	}
 	if req == nil {
 		return nil, &Error{Code: "invalid_request", Message: "http request is nil"}
+	}
+	if ctx == nil {
+		ctx = req.Context()
+	}
+	if errAccess := m.AuthorizeCredentialUse(ctx, auth); errAccess != nil {
+		return nil, errAccess
 	}
 	providerKey := executorKeyFromAuth(auth)
 	if providerKey == "" {

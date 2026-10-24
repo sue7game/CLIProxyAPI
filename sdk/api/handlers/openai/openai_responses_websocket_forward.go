@@ -80,6 +80,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	for {
 		select {
 		case interruptPayload := <-localFrames:
+			opts.localInterrupt.end()
 			return completeResponsesWebsocketLocalInterrupt(writer, wsTimelineLog, cancel, interruptPayload, outputItemsByIndex, outputItemsFallback, pendingToolCallIDs)
 		case <-c.Request.Context().Done():
 			cancel(c.Request.Context().Err())
@@ -164,6 +165,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				if eventType == "response.subscription_usage" {
 					continue
 				}
+				// Publish turn state before the client can react to the event. Stream
+				// cleanup may lag behind delivery of a terminal response.
+				opts.localInterrupt.observe(payloads[i])
 				if eventType == "response.created" {
 					responseStarted = true
 					completed = false

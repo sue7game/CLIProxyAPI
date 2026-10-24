@@ -203,6 +203,7 @@ func (m *Manager) applyRuntimeAuthOverridePatch(
 	if result.affinityChanged {
 		m.invalidateSessionAffinity(result.authID)
 	}
+	m.NotifyCredentialAccessChanged()
 	return result.auth, result.revisions, true, nil
 }
 

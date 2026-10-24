@@ -500,7 +500,10 @@ func TestManager_ConcurrentUnauthorized_BarrierExecutionPreservesTerminalState(t
 		t.Fatalf("background refreshAuth called executor.Refresh on terminal unauthorized auth (%d -> %d)", callsBefore, got)
 	}
 
-	_, refreshed := m.tryRefreshAfterUnauthorized(context.Background(), final, &Error{HTTPStatus: http.StatusUnauthorized, Message: "401"}, false)
+	_, refreshed, errRefresh := m.tryRefreshAfterUnauthorized(context.Background(), final, &Error{HTTPStatus: http.StatusUnauthorized, Message: "401"}, false)
+	if errRefresh != nil {
+		t.Fatalf("tryRefreshAfterUnauthorized error = %v", errRefresh)
+	}
 	if refreshed {
 		t.Fatal("tryRefreshAfterUnauthorized should not report refreshed for terminal unauthorized auth")
 	}

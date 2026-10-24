@@ -1617,7 +1617,7 @@ func (c *Client) RPushPluginStatus(ctx context.Context, payload []byte) error {
 		if errDial != nil {
 			return nil, errDial
 		}
-		return newPluginSyncCancelableConn(ctx, conn), nil
+		return newContextBoundConn(ctx, conn), nil
 	}
 	statusClient := redis.NewClient(options)
 	errPush := statusClient.RPush(ctx, redisKeyPluginStatus, payload).Err()
@@ -1737,7 +1737,7 @@ func newPluginSyncCommandClient(ctx context.Context, template *redis.Options) *r
 		if errDial != nil {
 			return nil, errDial
 		}
-		return newPluginSyncCancelableConn(ctx, conn), nil
+		return newContextBoundConn(ctx, conn), nil
 	}
 	options.ReadTimeout = homePluginSyncOperationTimeout
 	options.MaxRetries = -1
@@ -1760,65 +1760,6 @@ func pluginSyncDialer(options *redis.Options) func(context.Context, string, stri
 		}
 		return tlsConn, nil
 	}
-}
-
-type pluginSyncCancelableConn struct {
-	net.Conn
-	done chan struct{}
-	once sync.Once
-}
-
-func newPluginSyncCancelableConn(ctx context.Context, conn net.Conn) net.Conn {
-	wrapped := &pluginSyncCancelableConn{Conn: conn, done: make(chan struct{})}
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = closeUnderlyingTransport(conn)
-		case <-wrapped.done:
-		}
-	}()
-	return wrapped
-}
-
-func closeUnderlyingTransport(conn net.Conn) error {
-	if conn == nil {
-		return net.ErrClosed
-	}
-	current := conn
-	for {
-		if dispatchConn, ok := current.(*homeDispatchConn); ok {
-			dispatchConn.untrack()
-			if next := dispatchConn.NetConn(); next != nil && next != current {
-				current = next
-				continue
-			}
-		}
-		if tlsConn, ok := current.(*tls.Conn); ok {
-			if netConn := tlsConn.NetConn(); netConn != nil && netConn != current {
-				current = netConn
-				continue
-			}
-		}
-		type unwrapper interface {
-			NetConn() net.Conn
-		}
-		if u, ok := current.(unwrapper); ok {
-			if next := u.NetConn(); next != nil && next != current {
-				current = next
-				continue
-			}
-		}
-		break
-	}
-	return current.Close()
-}
-
-func (c *pluginSyncCancelableConn) Close() error {
-	if c == nil || c.Conn == nil {
-		return net.ErrClosed
-	}
-	c.once.Do(func() { close(c.done) })
-	return c.Conn.Close()
 }
 
 func pluginSyncUnsupportedResponse(raw []byte) (string, bool) {

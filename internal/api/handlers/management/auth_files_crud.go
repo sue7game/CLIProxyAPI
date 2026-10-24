@@ -278,11 +278,29 @@ func (h *Handler) storeUploadedAuthFile(ctx context.Context, file *multipart.Fil
 }
 
 func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) error {
-	dst := filepath.Join(h.cfg.AuthDir, filepath.Base(name))
+	h.mu.Lock()
+	if h.cfg == nil {
+		h.mu.Unlock()
+		return fmt.Errorf("config unavailable")
+	}
+	authDir, enabled, hook := h.cfg.AuthDir, h.cfg.Grouping.Enabled, h.authFileApplyHook
+	h.mu.Unlock()
+	if legacy, _ := ctx.Value(legacyManagementContextKey{}).(bool); legacy {
+		hook = nil
+	}
+	dst := filepath.Join(authDir, filepath.Base(name))
 	if !filepath.IsAbs(dst) {
 		if abs, errAbs := filepath.Abs(dst); errAbs == nil {
 			dst = abs
 		}
+	}
+	if hook != nil {
+		release := h.beginSIWCFileMutation(ctx, dst)
+		defer release()
+		return hook(ctx, dst, append([]byte(nil), data...))
+	}
+	if enabled {
+		return fmt.Errorf("grouping: credential upload transaction is unavailable")
 	}
 	auth, err := h.buildAuthFromFileData(dst, data)
 	if err != nil {

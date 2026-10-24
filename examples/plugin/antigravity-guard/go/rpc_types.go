@@ -27,7 +27,9 @@ type envelopeError struct {
 }
 
 type lifecycleRequest struct {
-	ConfigYAML []byte `json:"config_yaml"`
+	ConfigYAML            []byte `json:"config_yaml"`
+	HostCallbackID        string `json:"host_callback_id,omitempty"`
+	MaintenanceCallbackID string `json:"maintenance_callback_id,omitempty"`
 }
 
 type registration struct {
@@ -131,6 +133,7 @@ func (r runtimeOverrideRevisions) forField(field string) uint64 {
 
 type runtimeOverrideRequest struct {
 	AuthIndex       string                    `json:"auth_index"`
+	HostCallbackID  string                    `json:"host_callback_id,omitempty"`
 	Disabled        *bool                     `json:"disabled,omitempty"`
 	Priority        *int                      `json:"priority,omitempty"`
 	ProxyURL        *string                   `json:"proxy_url,omitempty"`

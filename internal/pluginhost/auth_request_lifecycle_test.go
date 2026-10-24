@@ -35,7 +35,14 @@ func TestHostAuthRequestRejectsStaleAndForeignCallbackContexts(t *testing.T) {
 				wantError = "host plugin callback instance is closed"
 			}
 			request := authRequestLifecyclePayload(t, "unused-auth", callbackID)
-			if _, errCall := host.callFromPlugin(ctx, pluginabi.MethodHostAuthRequest, request); errCall == nil || !strings.Contains(errCall.Error(), wantError) {
+			_, errCall := host.callFromPlugin(ctx, pluginabi.MethodHostAuthRequest, request)
+			if scenario == "closed scope" {
+				if !coreauth.IsCredentialAccessError(errCall) {
+					t.Fatalf("closed callback scope error = %v, want typed credential denial", errCall)
+				}
+				return
+			}
+			if errCall == nil || !strings.Contains(errCall.Error(), wantError) {
 				t.Fatalf("host.auth.request error = %v, want %q", errCall, wantError)
 			}
 		})

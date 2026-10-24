@@ -1,12 +1,9 @@
 package openai
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -18,12 +15,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -266,67 +263,6 @@ func truncateWebsocketCloseReason(reason string, maxBytes int) string {
 	return truncated.String()
 }
 
-func (h *OpenAIResponsesAPIHandler) authenticateResponsesWebsocketTurn(c *gin.Context, baseReq *http.Request, payload []byte, requestModelName string, updateRequestContext bool) *interfaces.ErrorMessage {
-	if h == nil || h.AccessManager == nil {
-		return nil
-	}
-	sourceReq := baseReq
-	if sourceReq == nil && c != nil {
-		sourceReq = c.Request
-	}
-	if sourceReq == nil {
-		return nil
-	}
-	authBody := payload
-	if requestModelName != "" && json.Valid(payload) && strings.TrimSpace(gjson.GetBytes(payload, "model").String()) == "" {
-		if updated, errSet := sjson.SetBytes(bytes.Clone(payload), "model", requestModelName); errSet == nil {
-			authBody = updated
-		}
-	}
-	req := sourceReq.Clone(sourceReq.Context())
-	req.Method = http.MethodPost
-	if req.Header != nil {
-		for key := range req.Header {
-			lower := strings.ToLower(key)
-			if lower == "upgrade" || lower == "connection" || lower == "content-length" || strings.HasPrefix(lower, "sec-websocket-") {
-				delete(req.Header, key)
-			}
-		}
-	}
-	req.Body = io.NopCloser(bytes.NewReader(authBody))
-	req.ContentLength = int64(len(authBody))
-	req.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(authBody)), nil
-	}
-	result, authErr := h.AccessManager.Authenticate(req.Context(), req)
-	if authErr != nil {
-		msg := strings.TrimSpace(authErr.Message)
-		if msg == "" {
-			msg = authErr.Error()
-		}
-		return &interfaces.ErrorMessage{
-			StatusCode: authErr.HTTPStatusCode(),
-			Error:      errors.New(msg),
-		}
-	}
-	if result != nil && c != nil {
-		c.Set("userApiKey", result.Principal)
-		c.Set("accessProvider", result.Provider)
-		if len(result.Metadata) > 0 {
-			c.Set("accessMetadata", result.Metadata)
-		} else {
-			c.Set("accessMetadata", nil)
-		}
-		if updateRequestContext && c.Request != nil {
-			reqCtx := usage.WithAPIKey(c.Request.Context(), result.Principal)
-			reqCtx = usage.WithAccessProvider(reqCtx, result.Provider)
-			reqCtx = usage.WithIsNativeKey(reqCtx, usage.IsNativeAccessProvider(result.Provider))
-			c.Request = c.Request.WithContext(reqCtx)
-		}
-	}
-	return nil
-}
-
 // ResponsesWebsocket handles websocket requests for /v1/responses.
 // It accepts `response.create` and `response.append` requests and streams
 // response events back as JSON websocket text messages. `response.interrupt`
@@ -354,8 +290,14 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	}
 	wsTimelineLog := newWebsocketTimelineLog(requestLogEnabled, websocketTimelineSourceFromContext(c))
 	localInterrupt := newResponsesLocalInterrupt()
+	groupedBindings := &websocketCredentialBindings{}
+	sessionAuthorization := newWebsocketTurnAuthorization(socketCtx)
 	input, inputDone := readResponsesWebsocketInput(socketCtx, cancelSocket, conn, func(payload []byte) error {
-		return h.forwardResponsesWebsocketInterrupt(socketCtx, passthroughSessionID, payload)
+		ctx := sessionAuthorization.context()
+		if errAccess := groupedBindings.authorizeCurrent(ctx, h); errAccess != nil {
+			return errAccess
+		}
+		return h.forwardResponsesWebsocketInterrupt(ctx, passthroughSessionID, payload)
 	}, localInterrupt, writer, wsTimelineLog)
 	var duplexInput <-chan cliproxyexecutor.WebsocketInput
 	if codexResponseSteering {
@@ -554,6 +496,21 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 			continue
 		}
+		sessionAuthorization.updatePrincipal(c.Request.Context())
+		errAccess := h.authorizeWebsocketTurn(c.Request.Context(), pinnedAuthID)
+		if errAccess == nil && pinnedAuthID != "" {
+			errAccess = groupedBindings.authorize(c.Request.Context(), h, pinnedAuthID)
+		}
+		if errAccess != nil {
+			_, errWrite := writeResponsesWebsocketError(writer, wsTimelineLog, &interfaces.ErrorMessage{
+				StatusCode: clienterror.HTTPStatusFromErrorOr(errAccess, http.StatusForbidden), Error: errAccess,
+			})
+			wsTerminateErr = errAccess
+			if errWrite != nil {
+				wsTerminateErr = errWrite
+			}
+			return
+		}
 		executionParent := context.WithValue(c.Request.Context(), "gin", c)
 		executionParent, routeOverridesModelResolution := h.PrepareStreamModelRoute(
 			executionParent,
@@ -588,7 +545,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				}
 			}
 		}
-		useUpstreamWebsocketPassthrough := h.responsesWebsocketUsesUpstreamWebsocketPassthrough(requestModelName)
+		useUpstreamWebsocketPassthrough := h.responsesWebsocketUsesUpstreamWebsocketPassthrough(requestModelName, c.Request.Context())
 		if pinnedAuthID != "" {
 			if pinnedAuth, ok := sessionAuthByID(pinnedAuthID); ok && responsesWebsocketAuthSupportsIncrementalInput(pinnedAuth) {
 				provider := strings.ToLower(strings.TrimSpace(pinnedAuth.Provider))
@@ -674,7 +631,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 					allowCompactionReplayBypass = allowCompactionReplayBypass || responsesWebsocketAuthSupportsCompactionReplay(pinnedAuth)
 				}
 			} else {
-				allowCompactionReplayBypass = allowCompactionReplayBypass || h.websocketUpstreamSupportsCompactionReplayForModel(requestModelName)
+				allowCompactionReplayBypass = allowCompactionReplayBypass || h.websocketUpstreamSupportsCompactionReplayForModel(requestModelName, c.Request.Context())
 			}
 		}
 
@@ -796,16 +753,24 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
 		if duplexInput != nil {
 			cliCtx = cliproxyexecutor.WithWebsocketInput(cliCtx, duplexInput)
+			authorization := sessionAuthorization
 			cliCtx = cliproxyexecutor.WithWebsocketAuthCheck(cliCtx, func(authID string) bool {
 				current, ok := sessionAuthByID(authID)
-				return ok && current != nil && !current.Disabled && current.Status != coreauth.StatusDisabled
+				return ok && current != nil && !current.EffectiveDisabled() &&
+					groupedBindings.authorize(authorization.context(), h, authID) == nil
 			})
 			cliCtx = cliproxyexecutor.WithWebsocketTurnAuthorizer(cliCtx, func(turnPayload []byte) ([]byte, error) {
-				errAuth := h.authenticateResponsesWebsocketTurn(c, upgradeRequest, turnPayload, modelName, false)
-				if errAuth == nil {
-					return nil, nil
+				turnCtx, errAuth := h.authenticateResponsesWebsocketTurnContext(c, upgradeRequest, turnPayload, modelName, false)
+				if errAuth != nil {
+					return buildResponsesWebsocketErrorPayload(errAuth)
 				}
-				return buildResponsesWebsocketErrorPayload(errAuth)
+				authorization.updatePrincipal(turnCtx)
+				if errAccess := groupedBindings.authorizeCurrent(authorization.context(), h); errAccess != nil {
+					return buildResponsesWebsocketErrorPayload(&interfaces.ErrorMessage{
+						StatusCode: clienterror.HTTPStatusFromErrorOr(errAccess, http.StatusForbidden), Error: errAccess,
+					})
+				}
+				return nil, nil
 			})
 		}
 		if nativeWebsocketPassthrough && requestRequiresCurrentUpstreamWebsocket {
@@ -826,6 +791,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			if !ok || selectedAuth == nil {
 				return
 			}
+			groupedBindings.remember(selectedAuth)
 			attemptedUpstreamMode = upstreamModeForAuth(selectedAuth)
 			codexDuplexStream.Store(duplexInput != nil && attemptedUpstreamMode == responsesWebsocketUpstreamModeWS && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
 			preserveNativeOutput.Store(nativeRequest && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))

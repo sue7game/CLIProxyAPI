@@ -681,6 +681,9 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
 		return coreexecutor.Response{}, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
 	}
+	if errAccess := a.host.authorizePluginCredential(ctx, auth); errAccess != nil {
+		return coreexecutor.Response{}, errAccess
+	}
 
 	var reporter *helps.UsageReporter
 	if auth != nil {
@@ -701,7 +704,7 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 			}
 			return
 		}
-		if err != nil && reporter != nil {
+		if err != nil && reporter != nil && !coreauth.IsCredentialAccessError(err) {
 			reporter.PublishFailure(ctx, err)
 		}
 	}()
@@ -716,6 +719,9 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 		reporter.StartResponseTTFT()
 	}
 
+	if errAccess := a.host.authorizePluginCredential(ctx, auth); errAccess != nil {
+		return coreexecutor.Response{}, errAccess
+	}
 	pluginResp, errExecute := a.executor.Execute(ctx, buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
 	if errExecute != nil {
 		return coreexecutor.Response{}, errExecute
@@ -739,6 +745,9 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
 		return nil, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
 	}
+	if errAccess := a.host.authorizePluginCredential(ctx, auth); errAccess != nil {
+		return nil, errAccess
+	}
 
 	var reporter *helps.UsageReporter
 	if auth != nil {
@@ -759,7 +768,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 			}
 			return
 		}
-		if err != nil && reporter != nil {
+		if err != nil && reporter != nil && !coreauth.IsCredentialAccessError(err) {
 			reporter.PublishFailure(ctx, err)
 		}
 	}()
@@ -774,6 +783,9 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 		reporter.StartResponseTTFT()
 	}
 
+	if errAccess := a.host.authorizePluginCredential(ctx, auth); errAccess != nil {
+		return nil, errAccess
+	}
 	pluginResp, errExecuteStream := a.executor.ExecuteStream(ctx, buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
 	if errExecuteStream != nil {
 		return nil, errExecuteStream
@@ -897,6 +909,9 @@ func (a *executorAdapter) Refresh(ctx context.Context, auth *coreauth.Auth) (ref
 	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
 		return nil, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
 	}
+	if errAccess := a.host.authorizePluginCredential(ctx, auth); errAccess != nil {
+		return nil, errAccess
+	}
 	record := a.host.authProviderRecord(authProvider(auth))
 	if record == nil || record.plugin.Capabilities.AuthProvider == nil {
 		return auth.Clone(), nil
@@ -985,6 +1000,9 @@ func (a *executorAdapter) CountTokens(ctx context.Context, auth *coreauth.Auth, 
 	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
 		return coreexecutor.Response{}, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
 	}
+	if errAccess := a.host.authorizePluginCredential(ctx, auth); errAccess != nil {
+		return coreexecutor.Response{}, errAccess
+	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			a.host.fusePlugin(a.pluginID, "Executor.CountTokens", recovered)
@@ -996,6 +1014,9 @@ func (a *executorAdapter) CountTokens(ctx context.Context, auth *coreauth.Auth, 
 	prepared, errPrepare := a.prepareExecutorCall(req, opts)
 	if errPrepare != nil {
 		return coreexecutor.Response{}, errPrepare
+	}
+	if errAccess := a.host.authorizePluginCredential(ctx, auth); errAccess != nil {
+		return coreexecutor.Response{}, errAccess
 	}
 	pluginResp, errCountTokens := a.executor.CountTokens(ctx, buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
 	if errCountTokens != nil {
@@ -1015,6 +1036,12 @@ func (a *executorAdapter) HttpRequest(ctx context.Context, auth *coreauth.Auth, 
 	if req == nil {
 		return nil, fmt.Errorf("plugin executor %s received nil HTTP request", a.Identifier())
 	}
+	if ctx == nil {
+		ctx = req.Context()
+	}
+	if errAccess := a.host.authorizePluginCredential(ctx, auth); errAccess != nil {
+		return nil, errAccess
+	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			a.host.fusePlugin(a.pluginID, "Executor.HttpRequest", recovered)
@@ -1025,6 +1052,9 @@ func (a *executorAdapter) HttpRequest(ctx context.Context, auth *coreauth.Auth, 
 	body, errReadAll := readAndRestoreRequestBody(req)
 	if errReadAll != nil {
 		return nil, fmt.Errorf("read plugin http request body: %w", errReadAll)
+	}
+	if errAccess := a.host.authorizePluginCredential(ctx, auth); errAccess != nil {
+		return nil, errAccess
 	}
 	pluginResp, errHTTPRequest := a.executor.HttpRequest(ctx, pluginapi.ExecutorHTTPRequest{
 		AuthID:       authID(auth),

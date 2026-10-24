@@ -1,0 +1,115 @@
+package cliproxy
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"reflect"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/grouping"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+)
+
+func (s *Service) applyGroupingConfigMutation(ctx context.Context, request management.ConfigApplyRequest) error {
+	if s == nil || s.grouping == nil || request.Current == nil || request.Proposed == nil {
+		return groupingConfigError(grouping.ErrUnavailable)
+	}
+	release := s.beginManagementConfigMutation()
+	defer release()
+	g := s.grouping
+	g.transactionMu.Lock()
+	defer g.transactionMu.Unlock()
+	g.mu.Lock()
+	protected, wasUnavailable := g.enabled.Load(), g.unavailable.Load()
+	if protected {
+		g.unavailable.Store(true)
+	}
+	cfg, err := g.commitManagedConfig(ctx, request)
+	if err != nil && protected && !wasUnavailable {
+		// Rejected validation must not poison a healthy policy. An uncertain write
+		// closes the store, in which case the runtime remains unavailable.
+		if _, snapshotErr := g.store.Snapshot(); snapshotErr == nil {
+			g.unavailable.Store(false)
+		}
+	}
+	g.mu.Unlock()
+	g.notify()
+	if err != nil {
+		return groupingConfigError(err)
+	}
+	if !s.applyConfigUpdateTransaction(ctx, cfg, true) {
+		return groupingConfigError(grouping.ErrUnavailable)
+	}
+	return nil
+}
+
+func (s *Service) beginManagementConfigMutation() func() {
+	if s == nil || s.server == nil {
+		return func() {}
+	}
+	return s.server.BeginManagementConfigMutation()
+}
+
+func (g *groupingService) commitManagedConfig(ctx context.Context, request management.ConfigApplyRequest) (*config.Config, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	current := g.current.Load()
+	if !reflect.DeepEqual(current, request.Current) {
+		return nil, grouping.ErrConflict
+	}
+	proposed := request.Proposed.CloneForRuntime()
+	if g.store != nil {
+		if _, err := config.EnsureGroupingCredentialIDs(proposed); err != nil {
+			return nil, err
+		}
+	}
+	if err := config.ValidateGroupingMode(proposed); err != nil {
+		return nil, err
+	}
+	if err := g.validateReload(proposed); err != nil {
+		return nil, err
+	}
+	change, err := prepareManagedGroupingConfig(g.owner.configPath, request, proposed, g.store != nil)
+	if err != nil {
+		return nil, err
+	}
+	if g.store == nil {
+		if err := writeUninitializedGroupingConfig(*change); err != nil {
+			return nil, err
+		}
+		proposed.SourceHash = internalconfig.ComputeSourceHash(change.after)
+		g.current.Store(proposed.CloneForRuntime())
+		return proposed, nil
+	}
+	if err := config.ValidateGroupingCredentialIDs(proposed); err != nil {
+		return nil, err
+	}
+	before, err := g.store.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	after, err := g.managedPolicyTransition(before, proposed, request.TokenRotation)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := g.commitSourceTransaction(*change, before, after); err != nil {
+		return nil, err
+	}
+	proposed.SourceHash = internalconfig.ComputeSourceHash(change.after)
+	g.current.Store(proposed.CloneForRuntime())
+	return proposed, nil
+}
+
+func groupingConfigError(err error) error {
+	var existing *management.ConfigApplyError
+	if errors.As(err, &existing) {
+		return existing
+	}
+	if errors.Is(err, grouping.ErrConflict) || errors.Is(err, grouping.ErrInvalid) || errors.Is(err, grouping.ErrNotFound) || errors.Is(err, grouping.ErrRevision) {
+		return &management.ConfigApplyError{StatusCode: http.StatusConflict, Code: "grouping_conflict", Message: "configuration or grouping identities changed; refresh before retrying"}
+	}
+	return &management.ConfigApplyError{StatusCode: http.StatusServiceUnavailable, Code: "grouping_unavailable", Message: "grouping configuration transaction could not complete; inspect local policy health before retrying"}
+}

@@ -113,7 +113,7 @@ func (g *guard) applyCodexDisable(authIndex, trigger string, until time.Time, re
 		}
 		g.store.setCooldownOriginal(authIndex, generation, entry.RuntimeOverride)
 		disabled := true
-		response, errSet := g.host.SetRuntimeOverride(runtimeOverrideRequest{AuthIndex: authIndex, Disabled: &disabled, IfRevisionField: "disabled", IfRevision: ptr(entry.RuntimeOverrideRevisions.Disabled)})
+		response, errSet := g.currentHostLocked().SetRuntimeOverride(runtimeOverrideRequest{AuthIndex: authIndex, Disabled: &disabled, IfRevisionField: "disabled", IfRevision: ptr(entry.RuntimeOverrideRevisions.Disabled)})
 		if errSet == nil && !response.Applied {
 			errSet = fmt.Errorf("runtime override changed while applying Codex 401 disable")
 		}
@@ -150,7 +150,7 @@ func (g *guard) evaluateRateLimit(authIndex, trigger string, retry retryTime, ge
 	var quotaResult weeklyQuotaResult
 	weeklyEmpty := false
 	fiveHourEmpty := false
-	entry, errEntry := g.authEntry(authIndex)
+	entry, errEntry := authEntryFromHost(g.host, authIndex)
 	if errEntry != nil {
 		g.store.recordQuotaError(authIndex, errEntry, now)
 	} else {

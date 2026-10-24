@@ -63,13 +63,16 @@ type rpcResponseNormalizer struct {
 }
 
 func registerRPCPlugin(ctx context.Context, host *Host, id string, client pluginClient, method string, configYAML []byte) (pluginapi.Plugin, error) {
+	completed := false
+	defer func() {
+		if !completed {
+			pluginCallbackInstance(client).revokeMaintenanceCallback()
+		}
+	}()
 	if client == nil {
 		return pluginapi.Plugin{}, fmt.Errorf("plugin client is nil")
 	}
-	resp, errCall := callPlugin[rpcRegistration](ctx, client, method, rpcLifecycleRequest{
-		ConfigYAML:    bytes.Clone(configYAML),
-		SchemaVersion: pluginabi.SchemaVersion,
-	})
+	resp, errCall := callPluginLifecycle(ctx, host, id, client, method, configYAML)
 	if errCall != nil {
 		return pluginapi.Plugin{}, errCall
 	}
@@ -179,6 +182,7 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 			identifier:       identifier,
 		}
 	}
+	completed = true
 	return plugin, nil
 }
 
@@ -484,10 +488,10 @@ func (a *rpcPluginAdapter) PollLogin(ctx context.Context, req pluginapi.AuthLogi
 func (a *rpcPluginAdapter) RefreshAuth(ctx context.Context, req pluginapi.AuthRefreshRequest) (pluginapi.AuthRefreshResponse, error) {
 	callbackID, closeCallback := a.openHostCallbackContext(ctx)
 	defer closeCallback()
-	return callPlugin[pluginapi.AuthRefreshResponse](ctx, a.client, pluginabi.MethodAuthRefresh, rpcAuthRefreshRequest{
+	return callPluginWithAccess[pluginapi.AuthRefreshResponse](ctx, a, pluginabi.MethodAuthRefresh, rpcAuthRefreshRequest{
 		AuthRefreshRequest: req,
 		HostCallbackID:     callbackID,
-	})
+	}, callbackID)
 }
 
 func (a *rpcPluginAdapter) Authenticate(ctx context.Context, req pluginapi.FrontendAuthRequest) (pluginapi.FrontendAuthResponse, error) {
@@ -497,28 +501,28 @@ func (a *rpcPluginAdapter) Authenticate(ctx context.Context, req pluginapi.Front
 func (a *rpcPluginAdapter) Execute(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
 	callbackID, closeCallback := a.openHostCallbackContext(ctx)
 	defer closeCallback()
-	return callPlugin[pluginapi.ExecutorResponse](ctx, a.client, pluginabi.MethodExecutorExecute, rpcExecutorRequest{
+	return callPluginWithAccess[pluginapi.ExecutorResponse](ctx, a, pluginabi.MethodExecutorExecute, rpcExecutorRequest{
 		ExecutorRequest: req,
 		HostCallbackID:  callbackID,
-	})
+	}, callbackID)
 }
 
 func (a *rpcPluginAdapter) CountTokens(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
 	callbackID, closeCallback := a.openHostCallbackContext(ctx)
 	defer closeCallback()
-	return callPlugin[pluginapi.ExecutorResponse](ctx, a.client, pluginabi.MethodExecutorCountTokens, rpcExecutorRequest{
+	return callPluginWithAccess[pluginapi.ExecutorResponse](ctx, a, pluginabi.MethodExecutorCountTokens, rpcExecutorRequest{
 		ExecutorRequest: req,
 		HostCallbackID:  callbackID,
-	})
+	}, callbackID)
 }
 
 func (a *rpcPluginAdapter) HttpRequest(ctx context.Context, req pluginapi.ExecutorHTTPRequest) (pluginapi.ExecutorHTTPResponse, error) {
 	callbackID, closeCallback := a.openHostCallbackContext(ctx)
 	defer closeCallback()
-	return callPlugin[pluginapi.ExecutorHTTPResponse](ctx, a.client, pluginabi.MethodExecutorHTTPRequest, rpcExecutorHTTPRequest{
+	return callPluginWithAccess[pluginapi.ExecutorHTTPResponse](ctx, a, pluginabi.MethodExecutorHTTPRequest, rpcExecutorHTTPRequest{
 		ExecutorHTTPRequest: req,
 		HostCallbackID:      callbackID,
-	})
+	}, callbackID)
 }
 
 func (a *rpcPluginAdapter) TranslateRequest(ctx context.Context, req pluginapi.RequestTransformRequest) (pluginapi.PayloadResponse, error) {

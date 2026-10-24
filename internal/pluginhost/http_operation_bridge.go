@@ -2,11 +2,8 @@ package pluginhost
 
 import (
 	"context"
-	"fmt"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 )
 
 type hostHTTPOperationKey struct {
@@ -36,7 +33,6 @@ type hostHTTPOperationHandle struct {
 }
 
 type hostHTTPOperationBridge struct {
-	next       atomic.Uint64
 	mu         sync.Mutex
 	operations map[hostHTTPOperationKey]*hostHTTPOperation
 }
@@ -60,7 +56,10 @@ func (b *hostHTTPOperationBridge) openWithClaimState(pluginID string, instance *
 	if parent == nil {
 		parent = context.Background()
 	}
-	operationID := strconv.FormatUint(b.next.Add(1), 10)
+	operationID := newGroupingBridgeID()
+	if operationID == "" {
+		return "", nil, false
+	}
 	operationCtx, cancel := context.WithCancel(parent)
 	key := hostHTTPOperationKey{pluginID: strings.TrimSpace(pluginID), operationID: operationID}
 	entry := &hostHTTPOperation{ctx: operationCtx, cancel: cancel, instance: instance, callbackID: strings.TrimSpace(callbackID), started: started}
@@ -176,6 +175,10 @@ func (b *hostHTTPOperationBridge) finish(pluginID, operationID string, entry *ho
 }
 
 func (b *hostHTTPOperationBridge) cancel(pluginID string, instance *hostCallbackInstance, operationID string) {
+	b.cancelOwned(pluginID, instance, operationID, "", false)
+}
+
+func (b *hostHTTPOperationBridge) cancelOwned(pluginID string, instance *hostCallbackInstance, operationID, callbackID string, requireCallback bool) {
 	if b == nil || strings.TrimSpace(operationID) == "" {
 		return
 	}
@@ -185,7 +188,7 @@ func (b *hostHTTPOperationBridge) cancel(pluginID string, instance *hostCallback
 	}
 	b.mu.Lock()
 	entry := b.operations[key]
-	if entry != nil && entry.instance == instance {
+	if entry != nil && entry.instance == instance && (!requireCallback || entry.callbackID == strings.TrimSpace(callbackID)) {
 		delete(b.operations, key)
 	} else {
 		entry = nil
@@ -256,176 +259,4 @@ func cancelHostHTTPOperation(entry *hostHTTPOperation) {
 	if entry.cleanup != nil {
 		entry.cleanup()
 	}
-}
-
-func (h *Host) closeHostHTTPCallbackInstance(pluginID string, instance *hostCallbackInstance) {
-	if instance != nil {
-		instance.closed.Store(true)
-	}
-	if h == nil {
-		return
-	}
-	if h.httpOperations != nil {
-		h.httpOperations.closeInstance(pluginID, instance)
-	}
-	if h.httpStreams != nil {
-		h.httpStreams.closeInstance(pluginID, instance)
-	}
-}
-
-func (h *Host) closeHostHTTPPluginResources(pluginID string, instance *hostCallbackInstance) {
-	h.closeHostHTTPCallbackInstance(pluginID, instance)
-	if h == nil {
-		return
-	}
-	if h.httpOperations != nil {
-		h.httpOperations.cancelPlugin(pluginID)
-	}
-	if h.httpStreams != nil {
-		h.httpStreams.closePlugin(pluginID)
-	}
-}
-
-func (h *Host) openHostHTTPOperation(ctx context.Context, callbackID string) (string, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if h == nil || h.httpOperations == nil {
-		return "", fmt.Errorf("host http operation bridge is unavailable")
-	}
-	callbackID = strings.TrimSpace(callbackID)
-	pluginID := hostCallbackPluginIDFromContext(ctx)
-	instance := hostCallbackInstanceFromContext(ctx)
-	parent := ctx
-	if callbackID != "" {
-		var callbackPluginID string
-		var callbackInstance *hostCallbackInstance
-		var exists bool
-		parent, callbackPluginID, callbackInstance, exists = h.lookupCallbackContext(callbackID)
-		if !exists {
-			return "", fmt.Errorf("host callback ID is not open")
-		}
-		if pluginID != "" && callbackPluginID != pluginID {
-			return "", fmt.Errorf("host callback ID does not belong to the calling plugin")
-		}
-		if pluginID == "" {
-			pluginID = callbackPluginID
-		}
-		if instance != callbackInstance && (instance != nil || callbackInstance != nil) {
-			return "", fmt.Errorf("host callback ID does not belong to the calling plugin instance")
-		}
-		if instance == nil {
-			instance = callbackInstance
-		}
-	}
-	operationID, _, errOpen := h.createHostHTTPOperation(pluginID, instance, callbackID, parent, false)
-	if errOpen != nil {
-		return "", errOpen
-	}
-	return operationID, nil
-}
-
-func (h *Host) createHostHTTPOperation(pluginID string, instance *hostCallbackInstance, callbackID string, parent context.Context, claimed bool) (string, *hostHTTPOperation, error) {
-	if h == nil || h.httpOperations == nil {
-		return "", nil, fmt.Errorf("host http operation bridge is unavailable")
-	}
-	var operationID string
-	var entry *hostHTTPOperation
-	var opened bool
-	if claimed {
-		operationID, entry, opened = h.httpOperations.openClaimed(pluginID, instance, callbackID, parent)
-	} else {
-		operationID, entry, opened = h.httpOperations.open(pluginID, instance, callbackID, parent)
-	}
-	if !opened {
-		return "", nil, fmt.Errorf("host http operation bridge is unavailable")
-	}
-	if callbackID != "" {
-		stopScopeCleanup, attached := h.addCallbackCleanupHandle(callbackID, func() {
-			h.httpOperations.cancel(pluginID, instance, operationID)
-		})
-		if !attached || !h.httpOperations.setScopeCleanup(pluginID, operationID, entry, stopScopeCleanup) {
-			h.httpOperations.cancel(pluginID, instance, operationID)
-			return "", nil, fmt.Errorf("host callback context closed while opening HTTP operation")
-		}
-	}
-	return operationID, entry, nil
-}
-
-func (h *Host) acquireHostHTTPOperation(ctx context.Context, callbackID, operationID string) (hostHTTPOperationHandle, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	operationID = strings.TrimSpace(operationID)
-	callbackID = strings.TrimSpace(callbackID)
-	pluginID := hostCallbackPluginIDFromContext(ctx)
-	instance := hostCallbackInstanceFromContext(ctx)
-	if operationID == "" {
-		parent := ctx
-		if callbackID != "" {
-			var callbackPluginID string
-			var callbackInstance *hostCallbackInstance
-			var exists bool
-			parent, callbackPluginID, callbackInstance, exists = h.lookupCallbackContext(callbackID)
-			if !exists {
-				return hostHTTPOperationHandle{}, fmt.Errorf("host callback ID is not open")
-			}
-			if pluginID != "" && callbackPluginID != pluginID {
-				return hostHTTPOperationHandle{}, fmt.Errorf("host callback ID does not belong to the calling plugin")
-			}
-			if pluginID == "" {
-				pluginID = callbackPluginID
-			}
-			if instance != callbackInstance && (instance != nil || callbackInstance != nil) {
-				return hostHTTPOperationHandle{}, fmt.Errorf("host callback ID does not belong to the calling plugin instance")
-			}
-			if instance == nil {
-				instance = callbackInstance
-			}
-		}
-		operationID, entry, errOpen := h.createHostHTTPOperation(pluginID, instance, callbackID, parent, true)
-		if errOpen != nil {
-			return hostHTTPOperationHandle{}, errOpen
-		}
-		finish := func() {
-			h.httpOperations.finish(pluginID, operationID, entry)
-		}
-		return hostHTTPOperationHandle{
-			ctx:         entry.ctx,
-			cancel:      entry.cancel,
-			finish:      finish,
-			pluginID:    pluginID,
-			instance:    instance,
-			operationID: operationID,
-			entry:       entry,
-		}, nil
-	}
-	if h == nil || h.httpOperations == nil {
-		return hostHTTPOperationHandle{}, fmt.Errorf("host http operation bridge is unavailable")
-	}
-	if pluginID == "" || instance == nil {
-		_, callbackPluginID, callbackInstance, _ := h.lookupCallbackContext(callbackID)
-		if pluginID == "" {
-			pluginID = callbackPluginID
-		}
-		if instance == nil {
-			instance = callbackInstance
-		}
-	}
-	entry, claimed := h.httpOperations.claim(pluginID, instance, operationID, callbackID)
-	if !claimed {
-		return hostHTTPOperationHandle{}, fmt.Errorf("host http operation %q is not open", operationID)
-	}
-	finish := func() {
-		h.httpOperations.finish(pluginID, operationID, entry)
-	}
-	return hostHTTPOperationHandle{
-		ctx:         entry.ctx,
-		cancel:      entry.cancel,
-		finish:      finish,
-		pluginID:    pluginID,
-		operationID: operationID,
-		instance:    instance,
-		entry:       entry,
-	}, nil
 }

@@ -1,10 +1,55 @@
 package openai
 
 import (
+	"context"
+
 	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	responsesclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
 )
+
+func (h *OpenAIAPIHandler) codexClientModelsForRequest(ctx context.Context, models []map[string]any, version string) (map[string]any, error) {
+	cfg := h.CurrentConfig()
+	optimize := cfg != nil && cfg.Client.Codex.OptimizeMultiAgentV2
+	applyPatchEnabled := cfg != nil && cfg.Client.Codex.EnableApplyPatch
+	var toolSearch codexmodels.ToolSearchCapabilityForModelFunc
+	if responsesclaude.ClientToolSearchEnabled() {
+		toolSearch = h.SupportsNativeToolSearchModel
+	}
+	if !h.CredentialGroupingEnabled() {
+		var applyPatch codexmodels.ApplyPatchCapabilityForModelFunc
+		if applyPatchEnabled {
+			applyPatch = h.SupportsApplyPatchModel
+		}
+		r := registry.GetGlobalRegistry()
+		return codexmodels.BuildResponseForClientWithToolCapabilities(models, r.GetModelProviders, r.GetResponsesWebSearchCapability, applyPatch, toolSearch, optimize, version), nil
+	}
+	catalog, err := h.RequestModelCatalog(ctx, "openai")
+	if err != nil {
+		return nil, err
+	}
+	var applyPatch codexmodels.ApplyPatchCapabilityForModelFunc
+	if applyPatchEnabled {
+		applyPatch = func(id string) bool {
+			return h.AuthManager.SupportsApplyPatchForProviders(catalog.Providers[id])
+		}
+	}
+	if toolSearch != nil {
+		auths, errAccess := h.AuthManager.AccessibleAuths(ctx)
+		if errAccess != nil {
+			return nil, errAccess
+		}
+		for _, auth := range auths {
+			if errAccess = h.AuthManager.AuthorizeCredentialUse(ctx, auth); errAccess != nil {
+				return nil, errAccess
+			}
+		}
+		toolSearch = func(model string) bool {
+			return h.AuthManager.SupportsNativeToolSearchForAuths(model, auths)
+		}
+	}
+	return codexmodels.BuildResponseForCredentialCatalogWithToolCapabilities(catalog, applyPatch, toolSearch, optimize, version), nil
+}
 
 func (h *OpenAIAPIHandler) codexClientModelsResponse(clientVersion ...string) map[string]any {
 	version := ""

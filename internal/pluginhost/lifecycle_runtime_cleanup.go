@@ -24,6 +24,9 @@ func (instance *hostCallbackInstance) needsRuntimeOverrideCleanup() bool {
 }
 
 func (h *Host) cleanupRuntimeOverrideOwner(ctx context.Context, lp *loadedPlugin) bool {
+	if lp != nil && lp.callbackInstance != nil {
+		lp.callbackInstance.revokeMaintenanceCallback()
+	}
 	if lp == nil || lp.callbackInstance == nil || !lp.callbackInstance.needsRuntimeOverrideCleanup() {
 		return true
 	}

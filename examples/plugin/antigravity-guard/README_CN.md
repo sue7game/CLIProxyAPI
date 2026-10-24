@@ -56,7 +56,12 @@
 
 ## 构建
 
-需要 Go 1.26+、CGO 和可用的 C 编译器。
+需要 Go 1.26.10+、CGO 和可用的 C 编译器。
+
+升级到支持分组授权的宿主时，必须同时使用同一版本源码重新构建并部署 Guard。
+旧版 Guard 二进制不会发送所需的回调作用域，凭据操作会被拒绝。
+新版将后台维护权限与每次请求的授权分开处理，协议说明见
+[原生插件回调作用域](../../../sdk/pluginabi/MAINTENANCE.md)。
 
 ```bash
 cd examples/plugin/antigravity-guard/go

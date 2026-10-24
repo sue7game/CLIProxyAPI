@@ -155,16 +155,30 @@ func (h *Handler) deleteFromStringList(c *gin.Context, targetOf func() *[]string
 }
 
 // api-keys
-func (h *Handler) GetAPIKeys(c *gin.Context) { c.JSON(200, gin.H{"api-keys": h.cfg.APIKeys}) }
+func (h *Handler) GetAPIKeys(c *gin.Context) {
+	h.mu.Lock()
+	keys := append([]string(nil), h.cfg.APIKeys...)
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"api-keys": keys})
+}
 func (h *Handler) PutAPIKeys(c *gin.Context) {
+	if h.putAPIKeysWithConfigApply(c) {
+		return
+	}
 	h.putStringList(c, func(v []string) {
 		h.cfg.APIKeys = append([]string(nil), v...)
 	}, nil)
 }
 func (h *Handler) PatchAPIKeys(c *gin.Context) {
+	if h.patchAPIKeysWithConfigApply(c) {
+		return
+	}
 	h.patchStringList(c, func() *[]string { return &h.cfg.APIKeys }, func() {})
 }
 func (h *Handler) DeleteAPIKeys(c *gin.Context) {
+	if h.deleteAPIKeysWithConfigApply(c) {
+		return
+	}
 	h.deleteFromStringList(c, func() *[]string { return &h.cfg.APIKeys }, func() {})
 }
 
@@ -173,6 +187,9 @@ func (h *Handler) GetGeminiKeys(c *gin.Context) {
 	c.JSON(200, gin.H{"gemini-api-key": h.geminiKeysWithAuthIndex()})
 }
 func (h *Handler) PutGeminiKeys(c *gin.Context) {
+	if h.withConfigDraft(c, "PutGeminiKeys", (*Handler).PutGeminiKeys) {
+		return
+	}
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
@@ -201,6 +218,9 @@ func (h *Handler) PutGeminiKeys(c *gin.Context) {
 	h.persistLocked(c)
 }
 func (h *Handler) PatchGeminiKey(c *gin.Context) {
+	if h.withConfigDraft(c, "PatchGeminiKey", (*Handler).PatchGeminiKey) {
+		return
+	}
 	type geminiKeyPatch struct {
 		APIKey              *string                          `json:"api-key"`
 		Priority            *int                             `json:"priority"`
@@ -310,8 +330,17 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 }
 
 func (h *Handler) DeleteGeminiKey(c *gin.Context) {
+	if h.withConfigDraft(c, "DeleteGeminiKey", (*Handler).DeleteGeminiKey) {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.deleteCredentialWithIdentity(c, len(h.cfg.GeminiKey), func(i int) []string { return []string{h.cfg.GeminiKey[i].GroupingID} }, func(i int) {
+		h.cfg.GeminiKey = append(h.cfg.GeminiKey[:i], h.cfg.GeminiKey[i+1:]...)
+		h.cfg.SanitizeGeminiKeys()
+	}, false) {
+		return
+	}
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
@@ -377,6 +406,9 @@ func (h *Handler) GetInteractionsKeys(c *gin.Context) {
 	c.JSON(200, gin.H{"interactions-api-key": h.interactionsKeysWithAuthIndex()})
 }
 func (h *Handler) PutInteractionsKeys(c *gin.Context) {
+	if h.withConfigDraft(c, "PutInteractionsKeys", (*Handler).PutInteractionsKeys) {
+		return
+	}
 	data, errRead := c.GetRawData()
 	if errRead != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
@@ -407,6 +439,9 @@ func (h *Handler) PutInteractionsKeys(c *gin.Context) {
 	h.persistLocked(c)
 }
 func (h *Handler) PatchInteractionsKey(c *gin.Context) {
+	if h.withConfigDraft(c, "PatchInteractionsKey", (*Handler).PatchInteractionsKey) {
+		return
+	}
 	type geminiKeyPatch struct {
 		APIKey              *string                          `json:"api-key"`
 		Priority            *int                             `json:"priority"`
@@ -517,8 +552,17 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 }
 
 func (h *Handler) DeleteInteractionsKey(c *gin.Context) {
+	if h.withConfigDraft(c, "DeleteInteractionsKey", (*Handler).DeleteInteractionsKey) {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.deleteCredentialWithIdentity(c, len(h.cfg.InteractionsKey), func(i int) []string { return []string{h.cfg.InteractionsKey[i].GroupingID} }, func(i int) {
+		h.cfg.InteractionsKey = append(h.cfg.InteractionsKey[:i], h.cfg.InteractionsKey[i+1:]...)
+		h.cfg.SanitizeInteractionsKeys()
+	}, false) {
+		return
+	}
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
@@ -608,6 +652,9 @@ func (h *Handler) GetClaudeKeys(c *gin.Context) {
 	c.JSON(200, gin.H{"claude-api-key": h.claudeKeysWithAuthIndex()})
 }
 func (h *Handler) PutClaudeKeys(c *gin.Context) {
+	if h.withConfigDraft(c, "PutClaudeKeys", (*Handler).PutClaudeKeys) {
+		return
+	}
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
@@ -649,6 +696,9 @@ func (h *Handler) PutClaudeKeys(c *gin.Context) {
 	h.persistLocked(c)
 }
 func (h *Handler) PatchClaudeKey(c *gin.Context) {
+	if h.withConfigDraft(c, "PatchClaudeKey", (*Handler).PatchClaudeKey) {
+		return
+	}
 	type claudeKeyPatch struct {
 		APIKey                  *string                          `json:"api-key"`
 		Priority                *int                             `json:"priority"`
@@ -810,8 +860,17 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 }
 
 func (h *Handler) DeleteClaudeKey(c *gin.Context) {
+	if h.withConfigDraft(c, "DeleteClaudeKey", (*Handler).DeleteClaudeKey) {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.deleteCredentialWithIdentity(c, len(h.cfg.ClaudeKey), func(i int) []string { return []string{h.cfg.ClaudeKey[i].GroupingID} }, func(i int) {
+		h.cfg.ClaudeKey = append(h.cfg.ClaudeKey[:i], h.cfg.ClaudeKey[i+1:]...)
+		h.cfg.SanitizeClaudeKeys()
+	}, false) {
+		return
+	}
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
@@ -867,6 +926,9 @@ func (h *Handler) GetOpenAICompat(c *gin.Context) {
 	c.JSON(200, gin.H{"openai-compatibility": h.openAICompatibilityWithAuthIndex()})
 }
 func (h *Handler) PutOpenAICompat(c *gin.Context) {
+	if h.withConfigDraft(c, "PutOpenAICompat", (*Handler).PutOpenAICompat) {
+		return
+	}
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
@@ -904,6 +966,9 @@ func (h *Handler) PutOpenAICompat(c *gin.Context) {
 	h.persistLocked(c)
 }
 func (h *Handler) PatchOpenAICompat(c *gin.Context) {
+	if h.withConfigDraft(c, "PatchOpenAICompat", (*Handler).PatchOpenAICompat) {
+		return
+	}
 	type openAICompatPatch struct {
 		Name                  *string                             `json:"name"`
 		Priority              *int                                `json:"priority"`
@@ -1005,8 +1070,17 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 }
 
 func (h *Handler) DeleteOpenAICompat(c *gin.Context) {
+	if h.withConfigDraft(c, "DeleteOpenAICompat", (*Handler).DeleteOpenAICompat) {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.deleteCredentialWithIdentity(c, len(h.cfg.OpenAICompatibility), h.openAICompatibilityIdentities, func(i int) {
+		h.cfg.OpenAICompatibility = append(h.cfg.OpenAICompatibility[:i], h.cfg.OpenAICompatibility[i+1:]...)
+		h.cfg.SanitizeOpenAICompatibility()
+	}, true) {
+		return
+	}
 	if name := c.Query("name"); name != "" {
 		out := make([]config.OpenAICompatibility, 0, len(h.cfg.OpenAICompatibility))
 		for _, v := range h.cfg.OpenAICompatibility {
@@ -1037,6 +1111,9 @@ func (h *Handler) GetVertexCompatKeys(c *gin.Context) {
 	c.JSON(200, gin.H{"vertex-api-key": h.vertexCompatKeysWithAuthIndex()})
 }
 func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
+	if h.withConfigDraft(c, "PutVertexCompatKeys", (*Handler).PutVertexCompatKeys) {
+		return
+	}
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
@@ -1070,6 +1147,9 @@ func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
 	h.persistLocked(c)
 }
 func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
+	if h.withConfigDraft(c, "PatchVertexCompatKey", (*Handler).PatchVertexCompatKey) {
+		return
+	}
 	type vertexCompatPatch struct {
 		APIKey         *string                     `json:"api-key"`
 		Priority       *int                        `json:"priority"`
@@ -1168,8 +1248,17 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 }
 
 func (h *Handler) DeleteVertexCompatKey(c *gin.Context) {
+	if h.withConfigDraft(c, "DeleteVertexCompatKey", (*Handler).DeleteVertexCompatKey) {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.deleteCredentialWithIdentity(c, len(h.cfg.VertexCompatAPIKey), func(i int) []string { return []string{h.cfg.VertexCompatAPIKey[i].GroupingID} }, func(i int) {
+		h.cfg.VertexCompatAPIKey = append(h.cfg.VertexCompatAPIKey[:i], h.cfg.VertexCompatAPIKey[i+1:]...)
+		h.cfg.SanitizeVertexCompatKeys()
+	}, false) {
+		return
+	}
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
@@ -1226,6 +1315,9 @@ func (h *Handler) GetOAuthExcludedModels(c *gin.Context) {
 }
 
 func (h *Handler) PutOAuthExcludedModels(c *gin.Context) {
+	if h.withConfigDraft(c, "PutOAuthExcludedModels", (*Handler).PutOAuthExcludedModels) {
+		return
+	}
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
@@ -1249,6 +1341,9 @@ func (h *Handler) PutOAuthExcludedModels(c *gin.Context) {
 }
 
 func (h *Handler) PatchOAuthExcludedModels(c *gin.Context) {
+	if h.withConfigDraft(c, "PatchOAuthExcludedModels", (*Handler).PatchOAuthExcludedModels) {
+		return
+	}
 	var body struct {
 		Provider *string  `json:"provider"`
 		Models   []string `json:"models"`
@@ -1289,6 +1384,9 @@ func (h *Handler) PatchOAuthExcludedModels(c *gin.Context) {
 }
 
 func (h *Handler) DeleteOAuthExcludedModels(c *gin.Context) {
+	if h.withConfigDraft(c, "DeleteOAuthExcludedModels", (*Handler).DeleteOAuthExcludedModels) {
+		return
+	}
 	provider := strings.ToLower(strings.TrimSpace(c.Query("provider")))
 	if provider == "" {
 		c.JSON(400, gin.H{"error": "missing provider"})
@@ -1317,6 +1415,9 @@ func (h *Handler) GetOAuthModelAlias(c *gin.Context) {
 }
 
 func (h *Handler) PutOAuthModelAlias(c *gin.Context) {
+	if h.withConfigDraft(c, "PutOAuthModelAlias", (*Handler).PutOAuthModelAlias) {
+		return
+	}
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
@@ -1340,6 +1441,9 @@ func (h *Handler) PutOAuthModelAlias(c *gin.Context) {
 }
 
 func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
+	if h.withConfigDraft(c, "PatchOAuthModelAlias", (*Handler).PatchOAuthModelAlias) {
+		return
+	}
 	var body struct {
 		Provider *string                  `json:"provider"`
 		Channel  *string                  `json:"channel"`
@@ -1389,6 +1493,9 @@ func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
 }
 
 func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
+	if h.withConfigDraft(c, "DeleteOAuthModelAlias", (*Handler).DeleteOAuthModelAlias) {
+		return
+	}
 	channel := strings.ToLower(strings.TrimSpace(c.Query("channel")))
 	if channel == "" {
 		channel = strings.ToLower(strings.TrimSpace(c.Query("provider")))
@@ -1420,6 +1527,9 @@ func (h *Handler) GetOAuthRequestScopedErrors(c *gin.Context) {
 }
 
 func (h *Handler) PutOAuthRequestScopedErrors(c *gin.Context) {
+	if h.withConfigDraft(c, "PutOAuthRequestScopedErrors", (*Handler).PutOAuthRequestScopedErrors) {
+		return
+	}
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
@@ -1443,6 +1553,9 @@ func (h *Handler) PutOAuthRequestScopedErrors(c *gin.Context) {
 }
 
 func (h *Handler) PatchOAuthRequestScopedErrors(c *gin.Context) {
+	if h.withConfigDraft(c, "PatchOAuthRequestScopedErrors", (*Handler).PatchOAuthRequestScopedErrors) {
+		return
+	}
 	var body struct {
 		Provider *string                         `json:"provider"`
 		Channel  *string                         `json:"channel"`
@@ -1492,6 +1605,9 @@ func (h *Handler) PatchOAuthRequestScopedErrors(c *gin.Context) {
 }
 
 func (h *Handler) DeleteOAuthRequestScopedErrors(c *gin.Context) {
+	if h.withConfigDraft(c, "DeleteOAuthRequestScopedErrors", (*Handler).DeleteOAuthRequestScopedErrors) {
+		return
+	}
 	channel := strings.ToLower(strings.TrimSpace(c.Query("channel")))
 	if channel == "" {
 		channel = strings.ToLower(strings.TrimSpace(c.Query("provider")))
@@ -1522,6 +1638,9 @@ func (h *Handler) GetCodexKeys(c *gin.Context) {
 	c.JSON(200, gin.H{"codex-api-key": h.codexKeysWithAuthIndex()})
 }
 func (h *Handler) PutCodexKeys(c *gin.Context) {
+	if h.withConfigDraft(c, "PutCodexKeys", (*Handler).PutCodexKeys) {
+		return
+	}
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
@@ -1558,6 +1677,9 @@ func (h *Handler) PutCodexKeys(c *gin.Context) {
 	h.persistLocked(c)
 }
 func (h *Handler) PatchCodexKey(c *gin.Context) {
+	if h.withConfigDraft(c, "PatchCodexKey", (*Handler).PatchCodexKey) {
+		return
+	}
 	type codexKeyPatch struct {
 		APIKey               *string                          `json:"api-key"`
 		Priority             *int                             `json:"priority"`
@@ -1666,8 +1788,17 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 }
 
 func (h *Handler) DeleteCodexKey(c *gin.Context) {
+	if h.withConfigDraft(c, "DeleteCodexKey", (*Handler).DeleteCodexKey) {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.deleteCredentialWithIdentity(c, len(h.cfg.CodexKey), func(i int) []string { return []string{h.cfg.CodexKey[i].GroupingID} }, func(i int) {
+		h.cfg.CodexKey = append(h.cfg.CodexKey[:i], h.cfg.CodexKey[i+1:]...)
+		h.cfg.SanitizeCodexKeys()
+	}, false) {
+		return
+	}
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
@@ -1724,6 +1855,9 @@ func (h *Handler) GetXAIKeys(c *gin.Context) {
 }
 
 func (h *Handler) PutXAIKeys(c *gin.Context) {
+	if h.withConfigDraft(c, "PutXAIKeys", (*Handler).PutXAIKeys) {
+		return
+	}
 	data, errRead := c.GetRawData()
 	if errRead != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
@@ -1760,6 +1894,9 @@ func (h *Handler) PutXAIKeys(c *gin.Context) {
 }
 
 func (h *Handler) PatchXAIKey(c *gin.Context) {
+	if h.withConfigDraft(c, "PatchXAIKey", (*Handler).PatchXAIKey) {
+		return
+	}
 	type xaiKeyPatch struct {
 		APIKey              *string                          `json:"api-key"`
 		Priority            *int                             `json:"priority"`
@@ -1864,8 +2001,17 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 }
 
 func (h *Handler) DeleteXAIKey(c *gin.Context) {
+	if h.withConfigDraft(c, "DeleteXAIKey", (*Handler).DeleteXAIKey) {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.deleteCredentialWithIdentity(c, len(h.cfg.XAIKey), func(i int) []string { return []string{h.cfg.XAIKey[i].GroupingID} }, func(i int) {
+		h.cfg.XAIKey = append(h.cfg.XAIKey[:i], h.cfg.XAIKey[i+1:]...)
+		h.cfg.SanitizeXAIKeys()
+	}, false) {
+		return
+	}
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
@@ -1922,6 +2068,9 @@ func (h *Handler) GetMetaKeys(c *gin.Context) {
 }
 
 func (h *Handler) PutMetaKeys(c *gin.Context) {
+	if h.withConfigDraft(c, "PutMetaKeys", (*Handler).PutMetaKeys) {
+		return
+	}
 	data, errRead := c.GetRawData()
 	if errRead != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
@@ -1958,6 +2107,9 @@ func (h *Handler) PutMetaKeys(c *gin.Context) {
 }
 
 func (h *Handler) PatchMetaKey(c *gin.Context) {
+	if h.withConfigDraft(c, "PatchMetaKey", (*Handler).PatchMetaKey) {
+		return
+	}
 	type metaKeyPatch struct {
 		APIKey              *string                          `json:"api-key"`
 		Priority            *int                             `json:"priority"`
@@ -2055,8 +2207,17 @@ func (h *Handler) PatchMetaKey(c *gin.Context) {
 }
 
 func (h *Handler) DeleteMetaKey(c *gin.Context) {
+	if h.withConfigDraft(c, "DeleteMetaKey", (*Handler).DeleteMetaKey) {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.deleteCredentialWithIdentity(c, len(h.cfg.MetaKey), func(i int) []string { return []string{h.cfg.MetaKey[i].GroupingID} }, func(i int) {
+		h.cfg.MetaKey = append(h.cfg.MetaKey[:i], h.cfg.MetaKey[i+1:]...)
+		h.cfg.SanitizeMetaKeys()
+	}, false) {
+		return
+	}
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)

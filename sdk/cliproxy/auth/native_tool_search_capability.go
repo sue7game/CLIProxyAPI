@@ -18,11 +18,19 @@ type NativeToolSearchSupport interface {
 // credential registers exactly falls back to its unprefixed form. A model with
 // no serving credential is not supported.
 func (m *Manager) SupportsNativeToolSearchForModel(model string) bool {
+	if m == nil {
+		return false
+	}
+	return m.SupportsNativeToolSearchForAuths(model, m.List())
+}
+
+// SupportsNativeToolSearchForAuths evaluates only the supplied credential
+// snapshots. Request-scoped catalogs must supply their authorized credentials.
+func (m *Manager) SupportsNativeToolSearchForAuths(model string, auths []*Auth) bool {
 	model = strings.TrimSpace(model)
 	if m == nil || model == "" {
 		return false
 	}
-	auths := m.List()
 	serving := nativeToolSearchServingAuths(auths, model)
 	if len(serving) == 0 {
 		if slash := strings.Index(model, "/"); slash >= 0 {
@@ -53,7 +61,7 @@ func nativeToolSearchServingAuths(auths []*Auth, model string) []*Auth {
 	modelRegistry := registry.GetGlobalRegistry()
 	var serving []*Auth
 	for _, auth := range auths {
-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+		if auth == nil || auth.EffectiveDisabled() {
 			continue
 		}
 		if modelRegistry.ClientSupportsModel(auth.ID, model) {

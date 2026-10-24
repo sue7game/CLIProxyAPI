@@ -34,10 +34,14 @@ func (s *Service) Run(ctx context.Context) error {
 	if s == nil {
 		return fmt.Errorf("cliproxy: service is nil")
 	}
+	if errGrouping := config.ValidateGroupingMode(s.currentConfig()); errGrouping != nil {
+		return errGrouping
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx, runCancel := context.WithCancel(ctx)
+	ctx = sdkaccess.WithInternalOperation(ctx, sdkaccess.InternalMaintenance)
 	s.cfgMu.Lock()
 	s.antigravityContext = ctx
 	s.cfgMu.Unlock()
@@ -81,6 +85,13 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	s.applyRetryConfig(cfg)
+	if errGrouping := s.prepareGrouping(ctx); errGrouping != nil {
+		return errGrouping
+	}
+	cfg = s.currentConfig()
+	if s.pluginHost != nil {
+		s.pluginHost.SetGroupingAuthFileApplier(s.grouping.applyPluginAuthFile)
+	}
 	s.configureCooldownStateStore(cfg)
 
 	s.registerPluginAuthParser()
@@ -133,7 +144,17 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	// handlers no longer depend on legacy clients; pass nil slice initially
-	s.server = api.NewServer(cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
+	groupingBackend, errGroupingBackend := s.grouping.backend()
+	if errGroupingBackend != nil {
+		return errGroupingBackend
+	}
+	serverOptions := append(append([]api.ServerOption(nil), s.serverOptions...),
+		api.WithGroupingBackend(groupingBackend),
+		api.WithConfigApplyHook(s.applyGroupingConfigMutation),
+		api.WithAuthFileApplyHook(s.grouping.applyAuthFile),
+		api.WithGroupingAuthHooks(s.grouping.prepareOAuthRecord, s.grouping.finalizeOAuthRecord),
+	)
+	s.server = api.NewServer(cfg, s.coreManager, s.accessManager, s.configPath, serverOptions...)
 	s.syncPluginRuntimeConfig(ctx)
 	if homeEnabled {
 		s.configRuntimeMu.Lock()
@@ -390,6 +411,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 
 		usage.StopDefault()
+		if errGrouping := s.grouping.close(); errGrouping != nil {
+			shutdownErr = errors.Join(shutdownErr, errGrouping)
+		}
 	})
 	return shutdownErr
 }

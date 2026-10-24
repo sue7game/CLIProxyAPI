@@ -8,8 +8,10 @@ import (
 )
 
 type rpcLifecycleRequest struct {
-	ConfigYAML    []byte `json:"config_yaml"`
-	SchemaVersion uint32 `json:"schema_version"`
+	ConfigYAML            []byte `json:"config_yaml"`
+	SchemaVersion         uint32 `json:"schema_version"`
+	HostCallbackID        string `json:"host_callback_id,omitempty"`
+	MaintenanceCallbackID string `json:"maintenance_callback_id,omitempty"`
 }
 
 type rpcRegistration struct {

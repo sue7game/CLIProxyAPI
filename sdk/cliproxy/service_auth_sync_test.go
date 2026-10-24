@@ -1046,6 +1046,7 @@ func TestHandleAuthUpdates_SameRevisionWaitDoesNotWaitForOtherAuthInBatch(t *tes
 
 	bStarted := make(chan struct{})
 	bBlock := make(chan struct{})
+	finishedBatch := make(chan struct{})
 	var started atomic.Int32
 	modelRegistrationTaskHook = func() {
 		if started.Add(1) == 2 {
@@ -1054,12 +1055,13 @@ func TestHandleAuthUpdates_SameRevisionWaitDoesNotWaitForOtherAuthInBatch(t *tes
 		}
 	}
 	t.Cleanup(func() {
-		modelRegistrationTaskHook = nil
 		select {
 		case <-bBlock:
 		default:
 			close(bBlock)
 		}
+		<-finishedBatch
+		modelRegistrationTaskHook = nil
 	})
 
 	updateA := watcher.AuthUpdate{Action: watcher.AuthUpdateActionModify, ID: authAID, Auth: authA}
@@ -1067,7 +1069,6 @@ func TestHandleAuthUpdates_SameRevisionWaitDoesNotWaitForOtherAuthInBatch(t *tes
 	updateB := watcher.AuthUpdate{Action: watcher.AuthUpdateActionModify, ID: authBID, Auth: authB}
 	updateB.SetRevision(1)
 
-	finishedBatch := make(chan struct{})
 	go func() {
 		defer close(finishedBatch)
 		service.handleAuthUpdates(context.Background(), []watcher.AuthUpdate{updateA, updateB})
@@ -1079,15 +1080,18 @@ func TestHandleAuthUpdates_SameRevisionWaitDoesNotWaitForOtherAuthInBatch(t *tes
 		t.Fatal("second auth registration in batch did not start")
 	}
 
+	// Worker start order is deliberately unconstrained. Test the completed
+	// source, not whichever source happened to be first in the input slice.
+	completed := completedBatchUpdate(t, service, updateA, updateB)
 	doneA := make(chan struct{})
 	go func() {
-		service.handleAuthUpdate(context.Background(), updateA)
+		service.handleAuthUpdate(context.Background(), completed)
 		close(doneA)
 	}()
 	select {
 	case <-doneA:
 	case <-time.After(2 * time.Second):
-		t.Fatal("auth A hook wait blocked on unrelated auth B registration")
+		t.Fatal("completed auth hook wait blocked on unrelated registration")
 	}
 
 	close(bBlock)

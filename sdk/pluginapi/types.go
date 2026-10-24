@@ -839,6 +839,8 @@ type HostAuthFileEntry struct {
 
 // HostAuthGetRequest asks the host for credential JSON by auth index.
 type HostAuthGetRequest struct {
+	// HostCallbackID binds the lookup to a host-issued request identity.
+	HostCallbackID string `json:"host_callback_id,omitempty"`
 	// AuthIndex identifies the credential index.
 	AuthIndex string `json:"auth_index"`
 }
@@ -863,6 +865,8 @@ type HostAuthGetRuntimeResponse struct {
 
 // HostAuthSaveRequest asks the host to persist credential JSON to a physical auth file.
 type HostAuthSaveRequest struct {
+	// HostCallbackID binds the mutation to a host-issued internal operation.
+	HostCallbackID string `json:"host_callback_id,omitempty"`
 	// Name is the target auth file name. It must end with .json.
 	Name string `json:"name"`
 	// JSON contains the credential JSON payload to save.
@@ -900,6 +904,7 @@ const (
 )
 
 type HostAuthSetRuntimeOverrideRequest struct {
+	HostCallbackID  string                            `json:"host_callback_id,omitempty"`
 	AuthIndex       string                            `json:"auth_index"`
 	Disabled        *bool                             `json:"disabled,omitempty"`
 	Priority        *int                              `json:"priority,omitempty"`
@@ -939,6 +944,8 @@ type HostAuthRequestResponse struct {
 type HostAuthModelsRequest struct {
 	// AuthIndex identifies the credential index; empty requests all credentials.
 	AuthIndex string `json:"auth_index,omitempty"`
+	// HostCallbackID binds the query to a host-issued request identity.
+	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
 // HostAuthModelsResponse returns the models registered for each matching credential.
@@ -993,6 +1000,8 @@ type HostAffinityLookupResponse struct {
 
 // HostRoutingResetCooldownRequest asks the host to clear quota and cooldown routing state for one credential.
 type HostRoutingResetCooldownRequest struct {
+	// HostCallbackID binds the mutation to a host-issued internal operation.
+	HostCallbackID string `json:"host_callback_id,omitempty"`
 	// AuthIndex identifies the credential index.
 	AuthIndex string `json:"auth_index"`
 }

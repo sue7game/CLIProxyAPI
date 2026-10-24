@@ -13,15 +13,19 @@ func (a *rpcPluginAdapter) ExecuteStream(ctx context.Context, req pluginapi.Exec
 	if a == nil || a.host == nil || a.host.streams == nil {
 		return pluginapi.ExecutorStreamResponse{}, fmt.Errorf("plugin stream bridge is unavailable")
 	}
-	streamID, chunks, cleanupStream := a.host.streams.open(ctx)
 	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	streamID, chunks, cleanupStream := a.host.streams.openOwned(ctx, callbackID)
 	cleanup := combinedCleanup(cleanupStream, closeCallback)
+	if streamID == "" {
+		cleanup()
+		return pluginapi.ExecutorStreamResponse{}, fmt.Errorf("plugin stream bridge is unavailable")
+	}
 	rpcReq := rpcExecutorRequest{
 		ExecutorRequest: req,
 		StreamID:        streamID,
 		HostCallbackID:  callbackID,
 	}
-	resp, errCall := callPlugin[rpcExecutorStreamResponse](ctx, a.client, pluginabi.MethodExecutorExecuteStream, rpcReq)
+	resp, errCall := callPluginWithAccess[rpcExecutorStreamResponse](ctx, a, pluginabi.MethodExecutorExecuteStream, rpcReq, callbackID)
 	if errCall != nil {
 		cleanup()
 		return pluginapi.ExecutorStreamResponse{}, errCall
@@ -38,7 +42,7 @@ func (a *rpcPluginAdapter) ExecuteStream(ctx context.Context, req pluginapi.Exec
 	// Async streaming plugins can return before they finish emitting chunks, so keep callbacks alive until the stream ends.
 	return pluginapi.ExecutorStreamResponse{
 		Headers: resp.Headers,
-		Chunks:  cleanupWhenStreamDone(ctx, chunks, cleanup),
+		Chunks:  cleanupWhenStreamDone(ctx, withCallbackAccessErrors(ctx, chunks, a.host.callbackAccessDenial(callbackID)), cleanup),
 	}, nil
 }
 

@@ -10,7 +10,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
-func (h *Host) callHostAuthSetRuntimeOverride(_ context.Context, request []byte) ([]byte, error) {
+func (h *Host) callHostAuthSetRuntimeOverride(ctx context.Context, request []byte) ([]byte, error) {
+	if _, errContext := h.authorizeGroupingMutation(ctx, request); errContext != nil {
+		return nil, errContext
+	}
 	var req pluginapi.HostAuthSetRuntimeOverrideRequest
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode host auth runtime override request: %w", errUnmarshal)

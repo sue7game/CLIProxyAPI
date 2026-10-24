@@ -90,6 +90,10 @@ func testHotReloadRuntimeCleanup(t *testing.T, failFirst bool) {
 	dir, paths := makeVersionedPluginDir(t, "alpha", "1.0.0")
 	host.ApplyConfig(context.Background(), versionedPluginHostConfig(t, dir, "1.0.0"))
 	callbackCtx, instance := markRuntimeCleanupOwner(t, host, clearRequest)
+	maintenanceID := maintenanceCallbackForInstance(host, instance)
+	if maintenanceID == "" {
+		t.Fatal("active plugin has no maintenance capability")
+	}
 	_, operation, opened := host.httpOperations.open("alpha", instance, "", callbackCtx)
 	if !opened {
 		t.Fatal("failed to open old plugin HTTP operation")
@@ -100,6 +104,9 @@ func testHotReloadRuntimeCleanup(t *testing.T, failFirst bool) {
 	if failFirst {
 		if !host.pluginIdentityCurrent("alpha", paths["1.0.0"], "1.0.0") || instance.closed.Load() || operation.ctx.Err() != nil {
 			t.Fatal("failed runtime cleanup did not roll back to the callable old plugin")
+		}
+		if restored := maintenanceCallbackForInstance(host, instance); restored == "" || restored == maintenanceID {
+			t.Fatal("replacement rollback did not reissue maintenance capability")
 		}
 		host.ApplyConfig(context.Background(), versionedPluginHostConfig(t, dir, "2.0.0"))
 	}
@@ -141,12 +148,26 @@ func runtimeCleanupCallback(t *testing.T, host *Host, ctx context.Context, insta
 		if instance.closed.Load() || host.PluginRegistered("alpha") {
 			return fmt.Errorf("cleanup must run with live callbacks and detached capabilities")
 		}
+		if maintenanceCallbackForInstance(host, instance) != "" {
+			return fmt.Errorf("cleanup must not retain background maintenance capability")
+		}
 		if failFirst && call == 1 {
 			return fmt.Errorf("temporary cleanup failure")
 		}
 		_, errClear := host.callFromPlugin(ctx, pluginabi.MethodHostAuthSetRuntimeOverride, request)
 		return errClear
 	}
+}
+
+func maintenanceCallbackForInstance(host *Host, instance *hostCallbackInstance) string {
+	host.callbackContexts.mu.RLock()
+	defer host.callbackContexts.mu.RUnlock()
+	for id, entry := range host.callbackContexts.contexts {
+		if maintenance, _ := entry.ctx.Value(maintenanceCallbackKey{}).(bool); maintenance && entry.instance == instance {
+			return id
+		}
+	}
+	return ""
 }
 
 func assertRuntimeCleanupComplete(t *testing.T, host *Host, authID string, instance *hostCallbackInstance) {

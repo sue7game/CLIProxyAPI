@@ -61,38 +61,39 @@ type pluginLoadResult struct {
 }
 
 type Host struct {
-	applyMu                chan struct{}
-	mu                     sync.Mutex
-	loader                 pluginLoader
-	loaded                 map[string]*loadedPlugin
-	retired                map[string][]*loadedPlugin
-	loading                map[string]*pluginLoadRequest
-	fused                  map[string]string
-	pluginFileVersions     map[string]string
-	activePluginVersions   map[string]string
-	activePluginPaths      map[string]string
-	cleanupFilesPending    bool
-	runtimeConfig          *config.Config
-	authManager            *coreauth.Manager
-	modelExecutor          modelExecutor
-	modelClientIDs         map[string]struct{} // Reserved for future use; catalog-only plugins do not populate it.
-	executorModelClientIDs map[string]struct{}
-	modelProviders         map[string]string
-	modelRegistrations     map[string]pluginModelRegistration
-	providerModels         map[string][]*registryModelInfo
-	executorProviders      map[string]struct{}
-	accessProviderKeys     map[string]struct{}
-	commandLineFlags       map[string]commandLineFlagRecord
-	commandLineHits        map[string]struct{}
-	managementRoutes       map[string]managementRouteRecord
-	resourceRoutes         map[string]resourceRouteRecord
-	deactivationPending    map[string]pluginDeactivationTarget
-	streams                *streamBridge
-	httpStreams            *hostHTTPStreamBridge
-	httpOperations         *hostHTTPOperationBridge
-	modelStreams           *modelStreamBridge
-	callbackContexts       *callbackContextRegistry
-	snapshot               atomic.Value
+	applyMu                 chan struct{}
+	mu                      sync.Mutex
+	loader                  pluginLoader
+	loaded                  map[string]*loadedPlugin
+	retired                 map[string][]*loadedPlugin
+	loading                 map[string]*pluginLoadRequest
+	fused                   map[string]string
+	pluginFileVersions      map[string]string
+	activePluginVersions    map[string]string
+	activePluginPaths       map[string]string
+	cleanupFilesPending     bool
+	runtimeConfig           *config.Config
+	authManager             *coreauth.Manager
+	groupingAuthFileApplier GroupingAuthFileApplier
+	modelExecutor           modelExecutor
+	modelClientIDs          map[string]struct{} // Reserved for future use; catalog-only plugins do not populate it.
+	executorModelClientIDs  map[string]struct{}
+	modelProviders          map[string]string
+	modelRegistrations      map[string]pluginModelRegistration
+	providerModels          map[string][]*registryModelInfo
+	executorProviders       map[string]struct{}
+	accessProviderKeys      map[string]struct{}
+	commandLineFlags        map[string]commandLineFlagRecord
+	commandLineHits         map[string]struct{}
+	managementRoutes        map[string]managementRouteRecord
+	resourceRoutes          map[string]resourceRouteRecord
+	deactivationPending     map[string]pluginDeactivationTarget
+	streams                 *streamBridge
+	httpStreams             *hostHTTPStreamBridge
+	httpOperations          *hostHTTPOperationBridge
+	modelStreams            *modelStreamBridge
+	callbackContexts        *callbackContextRegistry
+	snapshot                atomic.Value
 	// loadCleanupDoneHook, set by tests, runs after a late load cleanup dropped its load token.
 	loadCleanupDoneHook func()
 }
@@ -909,6 +910,7 @@ func (h *Host) callQuiesce(ctx context.Context, lp *loadedPlugin) bool {
 	if h == nil || lp == nil || lp.client == nil {
 		return false
 	}
+	lp.callbackInstance.revokeMaintenanceCallback()
 	errQuiesce, okCall := h.safePluginAction(ctx, lp.id, pluginabi.MethodPluginQuiesce, func() error {
 		_, errCall := callPlugin[rpcEmptyResponse](ctx, lp.client, pluginabi.MethodPluginQuiesce, rpcEmptyResponse{})
 		return errCall
@@ -1036,6 +1038,7 @@ func (h *Host) callRegister(ctx context.Context, lp *loadedPlugin, item runtimeI
 	h.mu.Unlock()
 	if !validPlugin(plugin) {
 		log.Warnf("pluginhost: plugin %s returned invalid metadata or no capabilities", lp.id)
+		lp.callbackInstance.revokeMaintenanceCallback()
 		return pluginapi.Plugin{}, false
 	}
 	plugin.Metadata = clonePluginMetadata(plugin.Metadata)

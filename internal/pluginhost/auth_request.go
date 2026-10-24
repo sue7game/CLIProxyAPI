@@ -33,6 +33,9 @@ func (h *Host) callHostAuthRequest(ctx context.Context, request []byte) ([]byte,
 	if errAuth != nil {
 		return nil, errAuth
 	}
+	if errAccess := h.authorizeHostCredential(ctx, auth); errAccess != nil {
+		return nil, errAccess
+	}
 	headers := cloneHeader(req.Headers)
 	token, auth, errHeaders := h.replaceHostAuthTokenHeaders(ctx, auth, headers)
 	if errHeaders != nil {
@@ -42,6 +45,9 @@ func (h *Host) callHostAuthRequest(ctx context.Context, request []byte) ([]byte,
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	if method == "" {
 		method = http.MethodGet
+	}
+	if errAccess := h.authorizeHostCredential(ctx, auth); errAccess != nil {
+		return nil, errAccess
 	}
 	resp, errDo := h.newAuthHTTPClient(auth, auth.Provider, token).Do(ctx, pluginapi.HTTPRequest{
 		Method:  method,

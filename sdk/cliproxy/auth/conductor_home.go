@@ -281,6 +281,9 @@ func isHomeRequestRetryExceededError(err error) bool {
 }
 
 func shouldReturnLastErrorOnPickFailure(homeMode bool, lastErr error, errPick error) bool {
+	if isCredentialAccessError(errPick) {
+		return false
+	}
 	if lastErr == nil {
 		return false
 	}
@@ -949,6 +952,9 @@ func (m *Manager) pickNextViaHome(ctx context.Context, model string, opts clipro
 }
 
 func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, opts cliproxyexecutor.Options) (*HomeDispatchSelection, error) {
+	if m.CredentialAccessPolicyEnabled() {
+		return nil, accessPolicyUnavailable("credential access policy is unavailable in Home mode")
+	}
 	if m == nil {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
@@ -1277,14 +1283,23 @@ func requestedModelFromMetadata(metadata map[string]any, fallback string) string
 }
 
 func (m *Manager) findAllAntigravityCreditsCandidateAuths(ctx context.Context, routeModel string, opts cliproxyexecutor.Options) ([]creditsCandidateEntry, error) {
+	var errAccess error
+	ctx, errAccess = m.beginCredentialAccess(ctx)
+	if errAccess != nil {
+		return nil, errAccess
+	}
 	if m == nil || !m.localExecutionAllowed() {
 		return nil, nil
 	}
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	eligibility := authSelectionEligibilityForRequest(ctx, opts)
 	var candidates []creditsCandidateEntry
 	m.mu.RLock()
 	for _, auth := range m.auths {
 		if auth == nil || auth.EffectiveDisabled() {
+			continue
+		}
+		if eligibility.accessScope != nil && !eligibility.allows(auth) {
 			continue
 		}
 		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
@@ -1355,6 +1370,9 @@ func hasAntigravityProvider(providers []string) bool {
 }
 
 func shouldAttemptAntigravityCreditsFallback(m *Manager, lastErr error, providers []string) bool {
+	if isCredentialAccessError(lastErr) {
+		return false
+	}
 	if isRequestTerminatedError(lastErr) {
 		return false
 	}
@@ -1390,6 +1408,11 @@ func shouldAttemptAntigravityCreditsFallback(m *Manager, lastErr error, provider
 }
 
 func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, bool, error) {
+	var errAccess error
+	ctx, errAccess = m.beginCredentialAccess(ctx)
+	if errAccess != nil {
+		return cliproxyexecutor.Response{}, false, errAccess
+	}
 	if m != nil && m.HomeEnabled() {
 		return cliproxyexecutor.Response{}, false, &Error{Code: "home_fallback_unsupported", Message: "Home does not support Antigravity credits fallback", HTTPStatus: http.StatusServiceUnavailable}
 	}
@@ -1414,6 +1437,9 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 		creditsCtx = contextWithRequestedModelAlias(creditsCtx, creditsOpts, routeModel)
 		preparedAuth, errPrepare := m.prepareRequestAuth(creditsCtx, c.executor, c.auth)
 		if errPrepare != nil {
+			if isCredentialAccessError(errPrepare) {
+				return cliproxyexecutor.Response{}, false, errPrepare
+			}
 			continue
 		}
 		c.auth = preparedAuth
@@ -1427,8 +1453,14 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 			execReq := req
 			execReq.Model = upstreamModel
 			creditsCtx = syncMetadataSessionToContext(creditsCtx, creditsOpts.Metadata)
+			if errAccess := m.AuthorizeCredentialUse(creditsCtx, c.auth); errAccess != nil {
+				return cliproxyexecutor.Response{}, false, errAccess
+			}
 			executionSeq := m.nextExecutionSeq()
 			resp, errExec := c.executor.Execute(creditsCtx, c.auth, execReq, creditsOpts)
+			if isCredentialAccessError(errExec) {
+				return cliproxyexecutor.Response{}, false, errExec
+			}
 			result := Result{AuthID: c.auth.ID, Provider: c.provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: creditsOpts, CredentialVersion: c.auth.CredentialVersion, RegistrationEpoch: c.auth.RegistrationEpoch, ExecutionSeq: executionSeq}
 			if errExec != nil {
 				result.Error = resultErrorFromError(errExec)
@@ -1454,6 +1486,11 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 }
 
 func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, bool, error) {
+	var errAccess error
+	ctx, errAccess = m.beginCredentialAccess(ctx)
+	if errAccess != nil {
+		return nil, false, errAccess
+	}
 	if m != nil && m.HomeEnabled() {
 		return nil, false, &Error{Code: "home_fallback_unsupported", Message: "Home does not support Antigravity credits fallback", HTTPStatus: http.StatusServiceUnavailable}
 	}
@@ -1477,6 +1514,9 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 		creditsOpts := ensureRequestedModelMetadata(opts, routeModel)
 		preparedAuth, errPrepare := m.prepareRequestAuth(creditsCtx, c.executor, c.auth)
 		if errPrepare != nil {
+			if isCredentialAccessError(errPrepare) {
+				return nil, false, errPrepare
+			}
 			continue
 		}
 		c.auth = preparedAuth
@@ -1488,6 +1528,9 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 		creditsCtx = syncMetadataSessionToContext(creditsCtx, creditsOpts.Metadata)
 		result, errStream := m.executeStreamWithModelPool(creditsCtx, c.executor, c.auth, c.provider, req, creditsOpts, routeModel, "", models, pooled, aliasResult, routing, true, false)
 		if errStream != nil {
+			if isCredentialAccessError(errStream) {
+				return nil, false, errStream
+			}
 			continue
 		}
 		return result, true, nil

@@ -16,12 +16,12 @@ type proxyAliasResult struct {
 	ProxyAlias string `json:"proxy_alias"`
 }
 
-func (a *application) proxyAliasResponse(raw []byte) managementResponse {
+func (a *application) proxyAliasResponse(raw []byte, callbackIDs ...string) managementResponse {
 	var request proxyAliasRequest
 	if errDecode := json.Unmarshal(raw, &request); errDecode != nil {
 		return jsonError(http.StatusBadRequest, "invalid proxy alias request")
 	}
-	entries, errList := a.host.ListAuths()
+	entries, errList := scopedHostClient(a.host, callbackIDs...).ListAuths()
 	if errList != nil {
 		return jsonError(http.StatusBadGateway, "list credentials: "+errList.Error())
 	}

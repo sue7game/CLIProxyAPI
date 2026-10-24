@@ -12,6 +12,16 @@ import (
 // ParseConfigBytes parses a YAML configuration payload into Config and applies the same
 // in-memory normalizations as LoadConfigOptional, without persisting any changes to disk.
 func ParseConfigBytes(data []byte) (*Config, error) {
+	return parseConfigBytes(data, false)
+}
+
+// ParseConfigBytesPreservingCredentials retains independent duplicate source
+// records until the synchronous grouping transaction assigns permanent identities.
+func ParseConfigBytesPreservingCredentials(data []byte) (*Config, error) {
+	return parseConfigBytes(data, true)
+}
+
+func parseConfigBytes(data []byte, preserveCredentials bool) (*Config, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("config payload is empty")
 	}
@@ -110,6 +120,8 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	}
 
 	// Apply the same sanitization pipeline.
+	groupingEnabled := cfg.Grouping.Enabled
+	cfg.Grouping.Enabled = groupingEnabled || preserveCredentials
 	cfg.SanitizeGeminiKeys()
 	cfg.SanitizeInteractionsKeys()
 	cfg.SanitizeVertexCompatKeys()
@@ -120,6 +132,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeClaudeHeaderDefaults()
 	cfg.SanitizeClaudeKeys()
 	cfg.SanitizeOpenAICompatibility()
+	cfg.Grouping.Enabled = groupingEnabled
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeOAuthModelAlias()
 	cfg.SanitizeOAuthSettings()

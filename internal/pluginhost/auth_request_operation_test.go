@@ -72,7 +72,7 @@ func TestHostAuthRequestExplicitOperationRejectsForeignIdentity(t *testing.T) {
 			}
 			request := authRequestOperationPayload(t, "unused-auth", callbackID, operationID)
 			_, errCall := host.callFromPlugin(ctx, pluginabi.MethodHostAuthRequest, request)
-			if errCall == nil || !strings.Contains(errCall.Error(), "is not open") {
+			if errCall == nil || (!strings.Contains(errCall.Error(), "is not open") && !strings.Contains(errCall.Error(), "does not belong")) {
 				t.Fatalf("foreign %s operation error = %v, want rejection", scenario, errCall)
 			}
 		})

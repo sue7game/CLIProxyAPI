@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 )
 
 const (
@@ -17,21 +18,26 @@ type hostClient interface {
 	Request(request hostAuthRequest) (hostAuthResponse, error)
 }
 
-type hostRPCClient struct{}
+type hostRPCClient struct {
+	maintenance *atomic.Pointer[string]
+	callbackID  *string
+	transport   func(string, []byte) ([]byte, int, error)
+}
 
 func newHostRPCClient() *hostRPCClient {
-	return &hostRPCClient{}
+	return &hostRPCClient{maintenance: &atomic.Pointer[string]{}, transport: callHostABI}
 }
 
 func (c *hostRPCClient) ListAuths() ([]hostAuthEntry, error) {
 	var response authListResponse
-	if errCall := c.call(methodHostAuthList, map[string]any{}, &response); errCall != nil {
+	if errCall := c.call(methodHostAuthList, map[string]string{"host_callback_id": c.hostCallbackID()}, &response); errCall != nil {
 		return nil, errCall
 	}
 	return response.Files, nil
 }
 
 func (c *hostRPCClient) SetRuntimeOverride(request runtimeOverrideRequest) (runtimeOverrideResponse, error) {
+	request.HostCallbackID = c.requestCallbackID(request.HostCallbackID)
 	var response runtimeOverrideResponse
 	if errCall := c.call(methodHostAuthSetRuntimeOverride, request, &response); errCall != nil {
 		return runtimeOverrideResponse{}, errCall
@@ -40,6 +46,7 @@ func (c *hostRPCClient) SetRuntimeOverride(request runtimeOverrideRequest) (runt
 }
 
 func (c *hostRPCClient) Request(request hostAuthRequest) (hostAuthResponse, error) {
+	request.HostCallbackID = c.requestCallbackID(request.HostCallbackID)
 	var response hostAuthResponse
 	if errCall := c.call(methodHostAuthRequest, request, &response); errCall != nil {
 		return hostAuthResponse{}, errCall
@@ -52,7 +59,7 @@ func (c *hostRPCClient) call(method string, payload any, output any) error {
 	if errMarshal != nil {
 		return fmt.Errorf("marshal host callback %s: %w", method, errMarshal)
 	}
-	rawResponse, code, errCall := callHostABI(method, rawPayload)
+	rawResponse, code, errCall := c.transport(method, rawPayload)
 	if errCall != nil {
 		return errCall
 	}

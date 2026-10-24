@@ -79,9 +79,12 @@ func decodeOptionalConsecutive429Threshold(raw json.RawMessage) (*int, error) {
 	return &value, nil
 }
 
-func (a *application) applyRuntime429Settings(settings runtime429Settings) (guardConfig, restoreSummary) {
+func (a *application) applyRuntime429Settings(settings runtime429Settings, hosts ...hostClient) (guardConfig, restoreSummary) {
 	a.guard.operations.Lock()
 	defer a.guard.operations.Unlock()
+	if len(hosts) > 0 {
+		defer a.guard.useHostLocked(hosts[0])()
+	}
 
 	a.configMu.Lock()
 	previousEnabled := a.config.Auto429Enabled

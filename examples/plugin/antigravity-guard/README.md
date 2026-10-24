@@ -58,7 +58,13 @@ The management page fetches quota when **Get quota** is selected for a credentia
 
 ## Build
 
-Go 1.26+, CGO, and a working C compiler are required.
+Go 1.26.10+, CGO, and a working C compiler are required.
+
+When upgrading to the grouping-aware host, rebuild and deploy Guard from the same
+revision. Older Guard binaries do not send the required callback scopes and their
+credential operations will be rejected. The updated plugin keeps background
+maintenance capabilities separate from per-request authorization; see
+[native callback scopes](../../../sdk/pluginabi/MAINTENANCE.md).
 
 ```bash
 cd examples/plugin/antigravity-guard/go

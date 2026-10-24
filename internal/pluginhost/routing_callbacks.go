@@ -14,6 +14,10 @@ import (
 // callHostRoutingResetCooldown clears quota and cooldown routing state for one credential, the
 // same reset POST /v8/management/routing/cooldown/reset performs, while ensuring token files are left alone.
 func (h *Host) callHostRoutingResetCooldown(ctx context.Context, request []byte) ([]byte, error) {
+	ctx, errContext := h.authorizeGroupingMutation(ctx, request)
+	if errContext != nil {
+		return nil, errContext
+	}
 	var req pluginapi.HostRoutingResetCooldownRequest
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode host routing reset cooldown request: %w", errUnmarshal)

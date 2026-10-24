@@ -10,6 +10,7 @@ import (
 
 type guard struct {
 	host               hostClient
+	operationHost      hostClient
 	store              *stateStore
 	config             func() guardConfig
 	quota              *quotaService
@@ -94,7 +95,7 @@ func (g *guard) applyCooldownLocked(authIndex, action string, priority int, trig
 		disabled := true
 		request.Disabled = &disabled
 	}
-	response, errSet := g.host.SetRuntimeOverride(request)
+	response, errSet := g.currentHostLocked().SetRuntimeOverride(request)
 	if errSet == nil && !response.Applied {
 		errSet = fmt.Errorf("runtime override changed while applying cooldown")
 	}
@@ -114,7 +115,7 @@ func (g *guard) applyWeeklyQuarantineLocked(authIndex string, priority int, unti
 	g.store.setCooldownOriginal(authIndex, generation, entry.RuntimeOverride)
 	disabled := true
 	expectedRevisions := entry.RuntimeOverrideRevisions
-	response, errSet := g.host.SetRuntimeOverride(runtimeOverrideRequest{
+	response, errSet := g.currentHostLocked().SetRuntimeOverride(runtimeOverrideRequest{
 		AuthIndex:   authIndex,
 		Disabled:    &disabled,
 		Priority:    &priority,
@@ -126,9 +127,12 @@ func (g *guard) applyWeeklyQuarantineLocked(authIndex string, priority int, unti
 	g.store.completeCooldownStart(authIndex, generation, response.Revisions, errSet)
 }
 
-func (g *guard) setProxy(authIndex string, proxyURL *string) error {
+func (g *guard) setProxy(authIndex string, proxyURL *string, hosts ...hostClient) error {
 	g.operations.Lock()
 	defer g.operations.Unlock()
+	if len(hosts) > 0 {
+		defer g.useHostLocked(hosts[0])()
+	}
 	if !g.config().Enabled {
 		return fmt.Errorf("plugin is disabled")
 	}
@@ -138,7 +142,7 @@ func (g *guard) setProxy(authIndex string, proxyURL *string) error {
 	} else {
 		request.ProxyURL = proxyURL
 	}
-	response, errSet := g.host.SetRuntimeOverride(request)
+	response, errSet := g.currentHostLocked().SetRuntimeOverride(request)
 	if errSet != nil {
 		return errSet
 	}
@@ -216,7 +220,7 @@ func (g *guard) retryManagedProxyCleanup(now time.Time) {
 
 func (g *guard) clearManagedProxyLocked(authIndex string, state credentialState, now time.Time) {
 	revision := state.ManagedProxyRevision
-	_, errClear := g.host.SetRuntimeOverride(runtimeOverrideRequest{
+	_, errClear := g.currentHostLocked().SetRuntimeOverride(runtimeOverrideRequest{
 		AuthIndex:       authIndex,
 		Clear:           []string{"proxy_url"},
 		IfRevision:      &revision,

@@ -223,6 +223,8 @@ func (h *Handler) InstallPluginFromStore(c *gin.Context) {
 }
 
 func (h *Handler) installPluginFromStore(c *gin.Context, goos, goarch string) {
+	h.pluginMutationMu.Lock()
+	defer h.pluginMutationMu.Unlock()
 	id, okID := pluginIDFromRequest(c)
 	if !okID {
 		return
@@ -305,39 +307,11 @@ func (h *Handler) installPluginFromStore(c *gin.Context, goos, goarch string) {
 		}
 	}
 	restartRequired := false
-
-	h.mu.Lock()
-	if h.cfg == nil {
-		h.mu.Unlock()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "config_unavailable",
-			"message": fmt.Sprintf("plugin file installed at %s but config is unavailable to enable it", result.Path),
-			"path":    result.Path,
-		})
+	original, configured := configs[id]
+	expected := pluginConfigExpectation{directory: pluginsDir, original: original, configured: configured}
+	if !h.commitInstalledPluginConfig(c, id, manifest, result.Path, result.Overwritten, expected) {
 		return
 	}
-	if errEnable := h.enablePluginConfigLocked(id, manifest); errEnable != nil {
-		h.mu.Unlock()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "config_update_failed",
-			"message": fmt.Sprintf("plugin file installed at %s but enabling it in config failed: %s", result.Path, errEnable.Error()),
-			"path":    result.Path,
-		})
-		return
-	}
-	if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); errSave != nil {
-		h.mu.Unlock()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "config_save_failed",
-			"message": fmt.Sprintf("plugin file installed at %s but saving config failed: %s", result.Path, errSave.Error()),
-			"path":    result.Path,
-		})
-		return
-	}
-	cfgSnapshot := h.reloadSnapshotConfigLocked()
-	h.mu.Unlock()
-
-	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), cfgSnapshot)
 	log.WithFields(log.Fields{
 		"plugin_id":    result.ID,
 		"plugin_name":  plugin.Name,

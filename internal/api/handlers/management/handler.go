@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginstore"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -57,6 +58,12 @@ type Handler struct {
 	postAuthPersistHook     coreauth.PostAuthHook
 	pluginHost              *pluginhost.Host
 	configReloadHook        func(context.Context, *config.Config)
+	configApplyHook         ConfigApplyHook
+	authFileApplyHook       AuthFileApplyHook
+	configApplyMu           sync.Mutex
+	legacyMutationMu        sync.RWMutex
+	pluginMutationMu        sync.Mutex
+	configDraft             *configMutationDraft
 	pluginStoreRegistryURL  string
 	pluginStoreHTTPClient   pluginstore.HTTPDoer
 	pluginStoreRateLimiter  *pluginstore.GitHubRateLimiter
@@ -211,6 +218,9 @@ func (h *Handler) reloadSnapshotConfigLocked() configReloadSnapshot {
 // saveConfigAndSnapshotLocked saves h.cfg and returns a full runtime config snapshot.
 // Callers must hold h.mu.
 func (h *Handler) saveConfigAndSnapshotLocked(c *gin.Context) (configReloadSnapshot, bool) {
+	if h.configDraft != nil {
+		return configReloadSnapshot{}, h.commitConfigDraft(c)
+	}
 	if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); errSave != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", errSave)})
 		return configReloadSnapshot{}, false
@@ -326,6 +336,12 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(statusCode, gin.H{"error": errMsg})
 			return
 		}
+		c.Request = c.Request.WithContext(sdkaccess.WithInternalOperation(c.Request.Context(), sdkaccess.InternalManagement))
+		releaseLegacy, blocked := h.guardLegacyGroupingRequest(c)
+		defer releaseLegacy()
+		if blocked {
+			return
+		}
 		c.Next()
 	}
 }
@@ -436,6 +452,13 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 // persistLocked saves the current in-memory config to disk.
 // It expects the caller to hold h.mu.
 func (h *Handler) persistLocked(c *gin.Context) bool {
+	if h.configDraft != nil {
+		if !h.commitConfigDraft(c) {
+			return false
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		return true
+	}
 	// Preserve comments when writing
 	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})

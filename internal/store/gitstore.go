@@ -21,7 +21,6 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
-	"github.com/go-git/go-git/v6/storage/filesystem/dotgit"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -1549,10 +1548,6 @@ func rollbackRecoveredGitDirectory(gitDir, backupGitDir string) error {
 		return fmt.Errorf("restore original git directory: %w", errRename)
 	}
 	return nil
-}
-
-func isRepositoryCorruptionError(err error) bool {
-	return errors.Is(err, dotgit.ErrPackfileNotFound) || errors.Is(err, plumbing.ErrObjectNotFound)
 }
 
 func verifyRepositoryHead(repo *git.Repository) error {

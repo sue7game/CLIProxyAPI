@@ -119,6 +119,7 @@ func (h *Host) deactivatePlugin(ctx context.Context, target pluginDeactivationTa
 	}
 	_, fused := h.fused[target.id]
 	h.mu.Unlock()
+	pluginCallbackInstance(target.client).revokeMaintenanceCallback()
 	if fused {
 		return false
 	}

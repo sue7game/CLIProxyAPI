@@ -821,36 +821,45 @@ func (m *Manager) RefreshHomeSelectionAfterUnauthorized(ctx context.Context, sel
 
 // tryRefreshAfterUnauthorized refreshes local OAuth credentials once after a
 // 401 so the current auth can be retried before fallback/suspend.
-func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, execErr error, alreadyTried bool, clientHeaders ...http.Header) (*Auth, bool) {
+func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, execErr error, alreadyTried bool, clientHeaders ...http.Header) (*Auth, bool, error) {
+	if isCredentialAccessError(execErr) {
+		return auth, false, execErr
+	}
 	if m == nil || auth == nil || execErr == nil {
-		return auth, false
+		return auth, false, nil
 	}
 	// Request-scoped failures describe this request, not stale credentials.
 	// Refreshing would turn a direct error response into an implicit retry.
 	if isRequestScopedError(execErr) || !isUnauthorizedError(execErr) {
-		return auth, false
+		return auth, false, nil
 	}
 	// A 401 matched by a configured request-scoped rule is the rule's to handle: no rejection, no refresh.
 	if _, ruleMatched := matchRequestScopedErrorAction(auth, execErr, m.runtimeConfigSnapshot()); ruleMatched {
-		return auth, false
+		return auth, false, nil
+	}
+	if errAccess := m.AuthorizeCredentialUse(ctx, auth); errAccess != nil {
+		return auth, false, errAccess
 	}
 	failedToken := authAccessTokenForRequest(ctx, auth, clientHeaders...)
 	if failedToken != "" {
 		m.markRejectedAccessToken(auth.ID, failedToken)
 	}
 	if alreadyTried || !authHasRefreshCredential(auth) || hasUnauthorizedAuthFailure(auth) {
-		return auth, false
+		return auth, false, nil
 	}
 	log.Debugf("unauthorized response for %s (%s), refreshing credentials before fallback", auth.Provider, auth.ID)
 	refreshed, errRefresh := m.refreshAuthForRequest(ctx, auth.ID, failedToken)
+	if isCredentialAccessError(errRefresh) {
+		return auth, false, errRefresh
+	}
 	if errRefresh != nil || refreshed == nil {
 		log.Debugf("credential refresh before fallback failed for %s (%s): %v", auth.Provider, auth.ID, errRefresh)
-		return auth, false
+		return auth, false, nil
 	}
 	if failedToken != "" && authAccessTokenForRequest(ctx, refreshed, clientHeaders...) == failedToken && (refreshed.RejectedAccessToken == failedToken || refreshed.RejectedSIWCAccessToken == failedToken) {
-		return auth, false
+		return auth, false, nil
 	}
-	return refreshed, true
+	return refreshed, true, nil
 }
 
 func invalidGrantBackoffDuration(failures int) time.Duration {
@@ -936,6 +945,11 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 		return nil, errors.New("auth manager is nil")
 	}
 	forceRefresh := isForceRefreshContext(ctx)
+	var errAccess error
+	ctx, errAccess = m.beginCredentialAccess(ctx)
+	if errAccess != nil {
+		return nil, errAccess
+	}
 	ctx = cliproxyexecutor.WithoutRequestProxyURL(ctx)
 	if ctx == nil {
 		ctx = context.Background()
@@ -967,8 +981,12 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 		// Use the same effective provider key as request execution so OpenAI-compat
 		// auths registered under namespaced keys still resolve for refresh.
 		exec, _ = m.executorLocked(executorKeyFromAuth(auth))
+		auth = auth.Clone()
 	}
 	m.mu.RUnlock()
+	if errAccess = m.AuthorizeCredentialUse(ctx, auth); errAccess != nil {
+		return nil, errAccess
+	}
 	if auth == nil || exec == nil {
 		return nil, errors.New("auth or executor not found")
 	}
@@ -992,6 +1010,9 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 	base := auth.Clone()
 	updated, err := exec.Refresh(ctx, base.Clone())
 	now := time.Now()
+	if isCredentialAccessError(err) {
+		return nil, err
+	}
 	if err != nil && errors.Is(err, context.Canceled) {
 		log.Debugf("refresh canceled for %s, %s", auth.Provider, auth.ID)
 		m.mu.Lock()
@@ -1177,6 +1198,9 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 	}
 	if targetAuth != nil && len(projections) > 0 {
 		registry.GetGlobalRegistry().ApplyClientModelProjections(id, regEpoch, targetAuth.Generation, projections)
+	}
+	if errAccess = m.AuthorizeCredentialUse(ctx, saved); errAccess != nil {
+		return nil, errAccess
 	}
 	return saved.Clone(), nil
 }

@@ -397,7 +397,7 @@ func (cfg *Config) SanitizeClaudeKeys() {
 	}
 }
 
-func sanitizeGeminiKeyEntries(entries []GeminiKey) []GeminiKey {
+func sanitizeGeminiKeyEntries(entries []GeminiKey, preserveRecords bool) []GeminiKey {
 	seen := make(map[string]struct{}, len(entries))
 	out := entries[:0]
 	for i := range entries {
@@ -412,7 +412,7 @@ func sanitizeGeminiKeyEntries(entries []GeminiKey) []GeminiKey {
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
 		uniqueKey := formatGeminiKeyDedupID(entry)
-		if _, exists := seen[uniqueKey]; exists {
+		if _, exists := seen[uniqueKey]; exists && entry.GroupingID == "" && !preserveRecords {
 			continue
 		}
 		seen[uniqueKey] = struct{}{}
@@ -455,22 +455,22 @@ func FormatSortedHeaders(headers map[string]string) string {
 	return b.String()
 }
 
-// SanitizeGeminiKeys deduplicates and normalizes Gemini credentials.
-// It uses API key, base URL, proxy URL, prefix, and custom headers as the uniqueness key.
+// SanitizeGeminiKeys normalizes Gemini credentials and deduplicates legacy records.
+// Grouping-enabled configurations and records with permanent identities are not merged.
 func (cfg *Config) SanitizeGeminiKeys() {
 	if cfg == nil {
 		return
 	}
-	cfg.GeminiKey = sanitizeGeminiKeyEntries(cfg.GeminiKey)
+	cfg.GeminiKey = sanitizeGeminiKeyEntries(cfg.GeminiKey, cfg.Grouping.Enabled)
 }
 
-// SanitizeInteractionsKeys deduplicates and normalizes native Interactions credentials.
-// It uses API key, base URL, proxy URL, prefix, and custom headers as the uniqueness key.
+// SanitizeInteractionsKeys normalizes native Interactions credentials and deduplicates legacy records.
+// Grouping-enabled configurations and records with permanent identities are not merged.
 func (cfg *Config) SanitizeInteractionsKeys() {
 	if cfg == nil {
 		return
 	}
-	cfg.InteractionsKey = sanitizeGeminiKeyEntries(cfg.InteractionsKey)
+	cfg.InteractionsKey = sanitizeGeminiKeyEntries(cfg.InteractionsKey, cfg.Grouping.Enabled)
 }
 
 func normalizeModelPrefix(prefix string) string {

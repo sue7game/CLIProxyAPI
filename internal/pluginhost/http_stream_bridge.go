@@ -3,10 +3,8 @@ package pluginhost
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -18,15 +16,15 @@ type hostHTTPStreamKey struct {
 }
 
 type hostHTTPStreamBridge struct {
-	next    atomic.Uint64
 	mu      sync.Mutex
 	streams map[hostHTTPStreamKey]hostHTTPStreamEntry
 }
 
 type hostHTTPStreamEntry struct {
-	chunks  <-chan pluginapi.HTTPStreamChunk
-	cancel  context.CancelFunc
-	onClose func()
+	ownerCallbackID string
+	chunks          <-chan pluginapi.HTTPStreamChunk
+	cancel          context.CancelFunc
+	onClose         func()
 }
 
 func newHostHTTPStreamBridge() *hostHTTPStreamBridge {
@@ -34,6 +32,10 @@ func newHostHTTPStreamBridge() *hostHTTPStreamBridge {
 }
 
 func (b *hostHTTPStreamBridge) open(pluginID string, instance *hostCallbackInstance, chunks <-chan pluginapi.HTTPStreamChunk, cancel context.CancelFunc, onClose func()) string {
+	return b.openOwned(pluginID, instance, chunks, cancel, onClose, "")
+}
+
+func (b *hostHTTPStreamBridge) openOwned(pluginID string, instance *hostCallbackInstance, chunks <-chan pluginapi.HTTPStreamChunk, cancel context.CancelFunc, onClose func(), ownerCallbackID string) string {
 	if b == nil || chunks == nil {
 		if cancel != nil {
 			cancel()
@@ -43,10 +45,19 @@ func (b *hostHTTPStreamBridge) open(pluginID string, instance *hostCallbackInsta
 		}
 		return ""
 	}
-	id := strconv.FormatUint(b.next.Add(1), 10)
+	id := newGroupingBridgeID()
+	if id == "" {
+		if cancel != nil {
+			cancel()
+		}
+		if onClose != nil {
+			onClose()
+		}
+		return ""
+	}
 	key := hostHTTPStreamKey{pluginID: strings.TrimSpace(pluginID), instance: instance, streamID: id}
 	b.mu.Lock()
-	b.streams[key] = hostHTTPStreamEntry{chunks: chunks, cancel: cancel, onClose: onClose}
+	b.streams[key] = hostHTTPStreamEntry{chunks: chunks, cancel: cancel, onClose: onClose, ownerCallbackID: ownerCallbackID}
 	b.mu.Unlock()
 	return id
 }

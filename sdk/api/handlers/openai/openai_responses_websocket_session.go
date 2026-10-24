@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -41,8 +42,8 @@ func websocketUpstreamSupportsIncrementalInput(attributes map[string]string, met
 	return false
 }
 
-func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsIncrementalInputForModel(modelName string) bool {
-	auths, _ := h.responsesWebsocketAvailableAuthsForModel(modelName)
+func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsIncrementalInputForModel(modelName string, contexts ...context.Context) bool {
+	auths, _ := h.responsesWebsocketAvailableAuthsForModel(modelName, contexts...)
 	for _, auth := range auths {
 		if responsesWebsocketAuthSupportsIncrementalInput(auth) {
 			return true
@@ -51,8 +52,8 @@ func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsIncrementalInputFor
 	return false
 }
 
-func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsCompactionReplayForModel(modelName string) bool {
-	auths, _ := h.responsesWebsocketAvailableAuthsForModel(modelName)
+func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsCompactionReplayForModel(modelName string, contexts ...context.Context) bool {
+	auths, _ := h.responsesWebsocketAvailableAuthsForModel(modelName, contexts...)
 	if len(auths) == 0 {
 		return false
 	}
@@ -64,7 +65,7 @@ func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsCompactionReplayFor
 	return true
 }
 
-func (h *OpenAIResponsesAPIHandler) responsesWebsocketAvailableAuthsForModel(modelName string) ([]*coreauth.Auth, string) {
+func (h *OpenAIResponsesAPIHandler) responsesWebsocketAvailableAuthsForModel(modelName string, contexts ...context.Context) ([]*coreauth.Auth, string) {
 	if h == nil || h.AuthManager == nil {
 		return nil, ""
 	}
@@ -76,9 +77,26 @@ func (h *OpenAIResponsesAPIHandler) responsesWebsocketAvailableAuthsForModel(mod
 
 	registryRef := registry.GetGlobalRegistry()
 	now := time.Now()
-	auths := h.AuthManager.List()
+	var auths []*coreauth.Auth
+	ctx := context.Background()
+	groupingEnabled := h.CredentialGroupingEnabled()
+	if groupingEnabled {
+		if len(contexts) > 0 && contexts[0] != nil {
+			ctx = contexts[0]
+		}
+		var errAccess error
+		auths, errAccess = h.AuthManager.AccessibleAuths(ctx)
+		if errAccess != nil {
+			return nil, modelKey
+		}
+	} else {
+		auths = h.AuthManager.List()
+	}
 	available := make([]*coreauth.Auth, 0, len(auths))
 	for _, auth := range auths {
+		if groupingEnabled && h.AuthManager.AuthorizeCredentialUse(ctx, auth) != nil {
+			return nil, modelKey
+		}
 		if !responsesWebsocketAuthMatchesModel(auth, providerSet, modelKey, registryRef, now) {
 			continue
 		}
@@ -91,12 +109,12 @@ func (h *OpenAIResponsesAPIHandler) responsesWebsocketUsesCodexWebsocketPassthro
 	return h.responsesWebsocketUsesUpstreamWebsocketPassthrough(modelName)
 }
 
-func (h *OpenAIResponsesAPIHandler) responsesWebsocketUsesUpstreamWebsocketPassthrough(modelName string) bool {
+func (h *OpenAIResponsesAPIHandler) responsesWebsocketUsesUpstreamWebsocketPassthrough(modelName string, contexts ...context.Context) bool {
 	modelName = strings.TrimSpace(modelName)
 	if h == nil || h.AuthManager == nil || modelName == "" {
 		return false
 	}
-	auths, _ := h.responsesWebsocketAvailableAuthsForModel(modelName)
+	auths, _ := h.responsesWebsocketAvailableAuthsForModel(modelName, contexts...)
 	if len(auths) == 0 {
 		return false
 	}
@@ -209,7 +227,7 @@ func responsesWebsocketAuthAvailableForModel(auth *coreauth.Auth, modelName stri
 	if auth == nil {
 		return false
 	}
-	if auth.Disabled || auth.Status == coreauth.StatusDisabled {
+	if auth.EffectiveDisabled() {
 		return false
 	}
 	if modelName != "" && len(auth.ModelStates) > 0 {

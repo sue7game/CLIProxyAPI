@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/groupingapi"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 )
 
@@ -18,6 +19,8 @@ func (s *Server) registerManagementV8Routes() {
 	v8.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware(), func(c *gin.Context) {
 		c.Set(management.ConfigV8ContextKey, true)
 	})
+	groupingapi.Register(v8, s.groupingBackend)
+	v8.PATCH("/access/api-keys", s.mgmt.PatchAPIKeysV8)
 	v8.GET("/config", s.mgmt.ConfigV8)
 	v8.PUT("/config", s.mgmt.ConfigV8)
 	v8.PATCH("/config", s.mgmt.ConfigV8)
@@ -46,7 +49,7 @@ func (s *Server) registerManagementV8Routes() {
 	v8.GET("/credentials/models", s.mgmt.GetAuthFileModels)
 	v8.GET("/credentials/download", s.mgmt.DownloadAuthFile)
 	v8.PATCH("/credentials/status", s.mgmt.PatchAuthFileStatus)
-	v8.PATCH("/credentials/fields", s.mgmt.PatchAuthFileFields)
+	v8.PATCH("/credentials/fields", s.mgmt.PatchAuthFileFieldsV8)
 	v8.POST("/credentials/refresh", s.mgmt.RefreshAuthFiles)
 	v8.POST("/oauth/import", s.mgmt.ImportOAuthV8)
 	v8.GET("/oauth/auth-url", s.mgmt.StartOAuthV8)

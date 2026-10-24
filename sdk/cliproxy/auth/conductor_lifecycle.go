@@ -159,6 +159,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	m.syncSchedulerAuth(auth.ID)
 	m.queueRefreshReschedule(auth.ID)
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
+	m.NotifyCredentialAccessChanged()
 	if cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
 	}
@@ -266,6 +267,7 @@ func (m *Manager) finishAuthUpdate(ctx context.Context, committed *Auth, persist
 	m.syncSchedulerAuth(committed.ID)
 	m.queueRefreshReschedule(committed.ID)
 	m.hook.OnAuthUpdated(ctx, committed.Clone())
+	m.NotifyCredentialAccessChanged()
 	if persistCooldown {
 		m.persistCooldownStates(context.Background())
 	}
@@ -545,6 +547,7 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 	tombstoneEpoch := m.authEpochs[id]
 	m.mu.Unlock()
 	releaseMutation()
+	m.NotifyCredentialAccessChanged()
 
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
@@ -674,6 +677,7 @@ func (m *Manager) Load(ctx context.Context) error {
 	}
 	m.structuralEpoch.Add(1)
 	m.syncScheduler()
+	m.NotifyCredentialAccessChanged()
 	return nil
 }
 

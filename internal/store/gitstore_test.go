@@ -1791,50 +1791,6 @@ func removeHeadFileObject(t *testing.T, repoDir, path string) {
 	}
 }
 
-func corruptGitRepository(t *testing.T, repoDir string) {
-	t.Helper()
-
-	repo, errOpen := git.PlainOpen(repoDir)
-	if errOpen != nil {
-		t.Fatalf("open repository before corruption: %v", errOpen)
-	}
-	defer func() {
-		if errClose := repo.Close(); errClose != nil {
-			t.Errorf("close corrupted repository: %v", errClose)
-		}
-	}()
-	if errRepack := repo.RepackObjects(&git.RepackConfig{}); errRepack != nil {
-		t.Fatalf("repack repository objects: %v", errRepack)
-	}
-	objectsDir := filepath.Join(repoDir, ".git", "objects")
-	objectEntries, errReadDir := os.ReadDir(objectsDir)
-	if errReadDir != nil {
-		t.Fatalf("read object directory: %v", errReadDir)
-	}
-	for _, entry := range objectEntries {
-		if entry.IsDir() && len(entry.Name()) == 2 {
-			if errRemove := os.RemoveAll(filepath.Join(objectsDir, entry.Name())); errRemove != nil {
-				t.Fatalf("remove loose object directory %s: %v", entry.Name(), errRemove)
-			}
-		}
-	}
-	packfiles, errGlob := filepath.Glob(filepath.Join(objectsDir, "pack", "*.pack"))
-	if errGlob != nil {
-		t.Fatalf("glob packfiles: %v", errGlob)
-	}
-	if len(packfiles) == 0 {
-		t.Fatal("no packfiles found to corrupt")
-	}
-	for _, packfile := range packfiles {
-		if errRemove := os.Remove(packfile); errRemove != nil {
-			t.Fatalf("remove packfile %s: %v", filepath.Base(packfile), errRemove)
-		}
-	}
-	if errVerify := verifyRepositoryHead(repo); !isRepositoryCorruptionError(errVerify) {
-		t.Fatalf("verifyRepositoryHead error = %v, want repository corruption", errVerify)
-	}
-}
-
 func setupGitRemoteRepository(t *testing.T, root, defaultBranch string, branches ...testBranchSpec) string {
 	t.Helper()
 

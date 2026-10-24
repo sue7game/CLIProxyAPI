@@ -143,6 +143,7 @@ func (m *Manager) recordCanceledUpstreamCooldown(ctx context.Context, auth *Auth
 }
 
 func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel, routeModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult, ephemeralResult bool, opts cliproxyexecutor.Options, executionSeq uint64) *cliproxyexecutor.StreamResult {
+	ctx = snapshotCodexClientRequest(ctx, opts.Headers)
 	out := make(chan cliproxyexecutor.StreamChunk)
 	streamStart := time.Now()
 	go func() {
@@ -154,6 +155,9 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			rewriter = NewStreamRewriter(StreamRewriteOptions{RewriteModel: aliasResult.OriginalAlias})
 		}
 		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
+			if isCredentialAccessError(chunk.Err) {
+				failed = true
+			}
 			if chunk.Err != nil && !failed {
 				failed = true
 				entry := logEntryWithRequestID(ctx)
@@ -263,7 +267,13 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
 		executionSeq := m.nextExecutionSeq()
 		startStream := time.Now()
+		if errAccess := m.AuthorizeCredentialUse(ctx, auth); errAccess != nil {
+			return nil, errAccess
+		}
 		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
+		if isCredentialAccessError(errStream) {
+			return nil, errStream
+		}
 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 		if hasUpstreamExecutionAttempt(errStream) {
 			upstreamErr = errStream
@@ -276,7 +286,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			if allowRetry && !ephemeralResult {
 				alreadyTried := didRefreshOnUnauthorized
-				refreshed, okRefresh := m.tryRefreshAfterUnauthorized(newUpstreamAttemptContext(ctx), auth, errStream, alreadyTried, execOpts.Headers)
+				refreshed, okRefresh, errRefresh := m.tryRefreshAfterUnauthorized(newUpstreamAttemptContext(ctx), auth, errStream, alreadyTried, execOpts.Headers)
+				if errRefresh != nil {
+					return nil, errRefresh
+				}
 				if okRefresh {
 					auth = refreshed
 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
@@ -285,7 +298,13 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
+					if errAccess := m.AuthorizeCredentialUse(ctx, auth); errAccess != nil {
+						return nil, errAccess
+					}
 					streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
+					if isCredentialAccessError(errStream) {
+						return nil, errStream
+					}
 					errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 					if hasUpstreamExecutionAttempt(errStream) {
 						upstreamErr = errStream
@@ -343,6 +362,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		}
 
 		buffered, closed, bootstrapErr := readStreamBootstrap(ctx, streamResult.Chunks)
+		if isCredentialAccessError(bootstrapErr) {
+			discardStreamChunks(streamResult.Chunks)
+			return nil, bootstrapErr
+		}
 		bootstrapErr = markUpstreamExecutionAttemptFromContext(ctx, bootstrapErr)
 		if hasUpstreamExecutionAttempt(bootstrapErr) {
 			upstreamErr = newStreamBootstrapError(bootstrapErr, streamResult.Headers)
@@ -355,7 +378,11 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			if allowRetry && !ephemeralResult {
 				alreadyTried := didRefreshOnUnauthorized
-				refreshed, okRefresh := m.tryRefreshAfterUnauthorized(newUpstreamAttemptContext(ctx), auth, bootstrapErr, alreadyTried, execOpts.Headers)
+				refreshed, okRefresh, errRefresh := m.tryRefreshAfterUnauthorized(newUpstreamAttemptContext(ctx), auth, bootstrapErr, alreadyTried, execOpts.Headers)
+				if errRefresh != nil {
+					discardStreamChunks(streamResult.Chunks)
+					return nil, errRefresh
+				}
 				if okRefresh {
 					discardStreamChunks(streamResult.Chunks)
 					auth = refreshed
@@ -364,7 +391,13 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					ctx = newUpstreamAttemptContext(ctx)
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
+					if errAccess := m.AuthorizeCredentialUse(ctx, auth); errAccess != nil {
+						return nil, errAccess
+					}
 					retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)
+					if isCredentialAccessError(retryErr) {
+						return nil, retryErr
+					}
 					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)
 					retryStream, retryErr = validateStreamResult(retryStream, retryErr)
 					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)
@@ -379,6 +412,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					} else {
 						streamResult = retryStream
 						buffered, closed, bootstrapErr = readStreamBootstrap(ctx, streamResult.Chunks)
+						if isCredentialAccessError(bootstrapErr) {
+							discardStreamChunks(streamResult.Chunks)
+							return nil, bootstrapErr
+						}
 						bootstrapErr = markUpstreamExecutionAttemptFromContext(ctx, bootstrapErr)
 						if bootstrapErr != nil {
 							warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startRetry), bootstrapErr)

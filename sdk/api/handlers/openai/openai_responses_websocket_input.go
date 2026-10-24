@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 )
@@ -22,9 +22,10 @@ import (
 // responsesLocalInterrupt cancels an in-flight HTTP turn. A websocket upstream
 // does not use it; that interrupt is written to the existing socket instead.
 type responsesLocalInterrupt struct {
-	mu     sync.Mutex
-	active bool
-	frames chan []byte
+	mu         sync.Mutex
+	active     bool
+	responseID string
+	frames     chan []byte
 }
 
 func newResponsesLocalInterrupt() *responsesLocalInterrupt {
@@ -37,7 +38,23 @@ func (s *responsesLocalInterrupt) begin() {
 	}
 	s.mu.Lock()
 	s.active = true
+	s.responseID = ""
 	s.mu.Unlock()
+}
+
+func (s *responsesLocalInterrupt) observe(payload []byte) {
+	if s == nil {
+		return
+	}
+	switch gjson.GetBytes(payload, "type").String() {
+	case "response.created":
+		s.mu.Lock()
+		s.responseID = strings.TrimSpace(gjson.GetBytes(payload, "response.id").String())
+		s.active = s.responseID != ""
+		s.mu.Unlock()
+	case "response.completed", "response.done", "response.incomplete", "response.failed":
+		s.end()
+	}
 }
 
 func (s *responsesLocalInterrupt) end() {
@@ -46,6 +63,7 @@ func (s *responsesLocalInterrupt) end() {
 	}
 	s.mu.Lock()
 	s.active = false
+	s.responseID = ""
 	select {
 	case <-s.frames:
 	default:
@@ -59,7 +77,7 @@ func (s *responsesLocalInterrupt) deliver(payload []byte) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.active {
+	if !s.active || s.responseID == "" || strings.TrimSpace(gjson.GetBytes(payload, "response_id").String()) != s.responseID {
 		return false
 	}
 	select {
@@ -111,7 +129,7 @@ func readResponsesWebsocketInput(ctx context.Context, cancel context.CancelCause
 					// The sanitized outcome replaces raw error logging here: errors
 					// from transport dependencies may contain credentials or URLs.
 					_, errWrite := writeResponsesWebsocketError(writer, nil, &interfaces.ErrorMessage{
-						StatusCode: http.StatusBadRequest,
+						StatusCode: clienterror.HTTPStatusFromErrorOr(errInterrupt, http.StatusBadRequest),
 						Error:      errInterrupt,
 					})
 					if errWrite != nil {
@@ -178,7 +196,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocketInterrupt(ctx conte
 		if !found || auth == nil {
 			auth, found = h.AuthManager.GetExecutionSessionAuthByID(sessionID, authID)
 		}
-		return found && auth != nil && !auth.Disabled && auth.Status != coreauth.StatusDisabled
+		return found && auth != nil && !auth.EffectiveDisabled() && h.AuthManager.AuthorizeCredentialUse(ctx, auth) == nil
 	})
 	return sender.InterruptExecutionSession(ctx, sessionID, payload)
 }

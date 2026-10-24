@@ -2,11 +2,12 @@ package cliproxy
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	log "github.com/sirupsen/logrus"
@@ -120,11 +121,62 @@ func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
 }
 
 func (s *Service) applyConfigUpdateWithAuthSynthesis(ctx context.Context, newCfg *config.Config, synthesizeConfigAuths bool) bool {
+	if s != nil && s.grouping != nil {
+		s.grouping.transactionMu.Lock()
+		defer s.grouping.transactionMu.Unlock()
+	}
+	return s.applyConfigUpdateTransaction(ctx, newCfg, synthesizeConfigAuths)
+}
+
+func (s *Service) applyConfigUpdateTransaction(ctx context.Context, newCfg *config.Config, synthesizeConfigAuths bool) bool {
+	ctx = sdkaccess.WithInternalOperation(ctx, sdkaccess.InternalMaintenance)
+	if s != nil && s.grouping != nil && newCfg != nil {
+		if err := s.grouping.validateReload(newCfg); err != nil {
+			if s.grouping.enabled.Load() {
+				s.grouping.sourcesUnavailable.Store(true)
+				s.grouping.notify()
+			}
+			log.WithError(err).Error("grouping rejected an unsafe configuration reload")
+			return false
+		}
+		if err := s.grouping.reconcileSources(ctx, newCfg); err != nil {
+			if errors.Is(err, errGroupingSourcePending) {
+				if err := s.grouping.deferConfigReload(ctx, newCfg, synthesizeConfigAuths); err != nil {
+					log.WithError(err).Error("grouping could not defer configuration reload")
+					return false
+				}
+				log.Warn("grouping queued the latest configuration reload until the source transaction completes")
+				return false
+			}
+			s.grouping.sourcesUnavailable.Store(true)
+			s.grouping.notify()
+			log.WithError(err).Error("grouping source reconciliation failed; refusing new proxy attempts")
+			return false
+		}
+		if s.usesAuthoritativeConfigAuths(newCfg) {
+			// Close before accepting the new config. Watcher events may still be
+			// queued, so runtime source publication is part of this transaction.
+			s.grouping.unavailable.Store(true)
+			s.grouping.notify()
+			synthesizeConfigAuths = true
+		}
+		s.grouping.sourcesUnavailable.Store(false)
+	}
 	commit := s.commitConfigUpdate(newCfg)
 	if commit.cfg == nil {
 		return false
 	}
-	return s.applyConfigRuntime(ctx, commit, synthesizeConfigAuths)
+	ok := s.applyConfigRuntime(ctx, commit, synthesizeConfigAuths)
+	if s.grouping != nil {
+		if ok {
+			s.grouping.clearDeferredConfig()
+		} else if s.grouping.enabled.Load() {
+			log.Error("grouping configuration runtime publication failed; new proxy attempts remain disabled")
+		}
+		s.grouping.unavailable.Store(!ok)
+		s.grouping.notify()
+	}
+	return ok
 }
 
 // commitConfigUpdate applies only in-memory configuration state. Runtime work that
@@ -150,6 +202,16 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 		log.WithError(errValidate).Warn("rejected config update with invalid credential weights")
 		return configCommit{}
 	}
+	if errGrouping := config.ValidateGroupingMode(newCfg); errGrouping != nil {
+		log.WithError(errGrouping).Warn("rejected incompatible grouping configuration")
+		return configCommit{}
+	}
+	if s.grouping != nil {
+		if errGrouping := s.grouping.validateReload(newCfg); errGrouping != nil {
+			log.WithError(errGrouping).Warn("rejected unsafe grouping configuration reload")
+			return configCommit{}
+		}
+	}
 
 	if errValidate := newCfg.Models.Validate(); errValidate != nil {
 		log.WithError(errValidate).Warn("rejected invalid model catalog sources")
@@ -157,6 +219,9 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 	}
 	s.cfgMu.Lock()
 	s.cfg = newCfg
+	if s.grouping != nil {
+		s.grouping.current.Store(newCfg.CloneForRuntime())
+	}
 	s.cfgMu.Unlock()
 	s.cancelStaleAntigravityProbes("")
 	s.configSequence++
@@ -190,7 +255,6 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}
-
 	if !s.applyManagerConfig(ctx, commit) {
 		return false
 	}
@@ -228,8 +292,8 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}
-	if synthesizeConfigAuths {
-		s.registerConfigAPIKeyAuths(registrationCtx, cfg)
+	if synthesizeConfigAuths && !s.registerConfigAPIKeyAuths(registrationCtx, cfg) {
+		return false
 	}
 	if errContext := ctx.Err(); errContext != nil {
 		return false
@@ -291,49 +355,28 @@ func (s *Service) reloadConfigFromWatcher() bool {
 	return w.ReloadConfigIfChanged()
 }
 
-func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Config) {
+func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Config) bool {
 	if s == nil || s.coreManager == nil || cfg == nil {
-		return
+		return true
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	configSynth := synthesizer.NewConfigSynthesizer()
-	auths, errSynthesize := configSynth.Synthesize(&synthesizer.SynthesisContext{
-		Config:      cfg,
-		Now:         time.Now(),
-		IDGenerator: synthesizer.NewStableIDGenerator(),
-	})
+	auths, errSynthesize := synthesizeConfigAPIKeyAuths(cfg)
 	if errSynthesize != nil {
 		log.Warnf("failed to synthesize config API key auths: %v", errSynthesize)
-		return
+		return false
 	}
-
+	if ctx.Err() != nil {
+		return false
+	}
 	registrationCtx := coreauth.WithDeferredAPIKeyModelAliasRebuild(ctx)
-	tasks := make([]modelRegistrationTask, 0, len(auths))
-	needsAliasRebuild := false
-	for _, auth := range auths {
-		if !coreauth.IsConfigAPIKeyAuth(auth) {
-			continue
-		}
-		prepared := s.prepareCoreAuthForModelRegistration(registrationCtx, auth)
-		if prepared == nil {
-			continue
-		}
-		needsAliasRebuild = true
-		authForRegistration := prepared
-		tasks = append(tasks, modelRegistrationTask{
-			phase:    modelRegistrationPhaseConfigAPIKey,
-			category: modelRegistrationCategory(authForRegistration),
-			run: func(compatCache *openAICompatibilityRegistrationCache) {
-				s.completeModelRegistrationForAuthWithCache(registrationCtx, authForRegistration, compatCache)
-			},
-		})
-	}
+	tasks, needsAliasRebuild := s.prepareConfigAuthSynchronization(registrationCtx, auths)
 	if needsAliasRebuild {
 		s.coreManager.RefreshAPIKeyModelAlias()
 	}
 	s.runModelRegistrationTasks(registrationCtx, tasks)
+	return ctx.Err() == nil
 }
 
 func forceHomeRuntimeConfig(cfg *config.Config) {
