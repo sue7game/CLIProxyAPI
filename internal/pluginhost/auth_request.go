@@ -22,7 +22,7 @@ func (h *Host) callHostAuthRequest(ctx context.Context, request []byte) ([]byte,
 	if errValidate := validateHostAuthRequest(req); errValidate != nil {
 		return nil, errValidate
 	}
-	operation, errAcquire := h.acquireHostHTTPOperation(ctx, req.HostCallbackID, "")
+	operation, errAcquire := h.acquireHostHTTPOperation(ctx, req.HostCallbackID, req.OperationID)
 	if errAcquire != nil {
 		return nil, errAcquire
 	}

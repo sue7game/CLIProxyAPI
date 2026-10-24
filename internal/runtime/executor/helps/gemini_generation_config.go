@@ -8,6 +8,7 @@ import (
 // NormalizeGeminiCandidateCount normalizes candidate count fields to one.
 // Gemini's candidate_count range is 1-8, but multiple candidates are not
 // enabled for every model. Using one is the only model-independent setting.
+// Run this built-in normalization before user payload rules so they remain authoritative.
 func NormalizeGeminiCandidateCount(payload []byte) []byte {
 	if len(payload) == 0 {
 		return payload

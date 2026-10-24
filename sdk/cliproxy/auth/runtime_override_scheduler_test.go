@@ -89,6 +89,24 @@ func TestManagerMutationSchedulerSyncUsesCurrentAuthState(t *testing.T) {
 				return errUpdate
 			},
 		},
+		{
+			name: "modify",
+			mutate: func(ctx context.Context, manager *Manager, auth *Auth) error {
+				_, _, errModify := manager.Modify(ctx, auth.ID, 0, func(current *Auth) error {
+					current.Metadata["access_token"] = auth.Metadata["access_token"]
+					return nil
+				})
+				return errModify
+			},
+		},
+		{
+			name: "registration_update",
+			mutate: func(ctx context.Context, manager *Manager, auth *Auth) error {
+				base, _ := manager.GetByID(auth.ID)
+				_, _, errUpdate := manager.UpdateIfRegistrationCurrent(ctx, base, auth)
+				return errUpdate
+			},
+		},
 	}
 
 	for _, test := range tests {

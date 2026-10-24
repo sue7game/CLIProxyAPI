@@ -9,7 +9,7 @@ import (
 )
 
 func TestRuntimeOverrideSurvivesConcurrentStoreSave(t *testing.T) {
-	for _, operation := range []string{"Register", "Update", "Prepare", "Refresh", "Metadata"} {
+	for _, operation := range []string{"Register", "Update", "Modify", "RegistrationUpdate", "Prepare", "Refresh", "Metadata"} {
 		t.Run(operation, func(t *testing.T) {
 			testRuntimeOverrideDuringStoreSave(t, operation)
 		})
@@ -82,6 +82,19 @@ func runRuntimeOverrideSaveOperation(manager *Manager, base *Auth, operation str
 		_, errSave = manager.Register(ctx, updated)
 	case "Update":
 		_, errSave = manager.Update(ctx, updated)
+	case "Modify":
+		_, applied, errModify := manager.Modify(ctx, base.ID, base.RegistrationEpoch, func(current *Auth) error {
+			current.Metadata["access_token"] = "new-token"
+			return nil
+		})
+		if errModify != nil || !applied {
+			return fmt.Errorf("modify save: applied=%t error=%v", applied, errModify)
+		}
+	case "RegistrationUpdate":
+		_, applied, errUpdate := manager.UpdateIfRegistrationCurrent(ctx, base, updated)
+		if errUpdate != nil || !applied {
+			return fmt.Errorf("registration update save: applied=%t error=%v", applied, errUpdate)
+		}
 	case "Prepare":
 		_, errSave = manager.UpdatePreparedAuth(ctx, base, updated)
 	case "Refresh":

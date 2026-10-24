@@ -74,11 +74,11 @@ func (c *hostHTTPClient) Do(ctx context.Context, req pluginapi.HTTPRequest) (plu
 	}
 	resp, cfg, cleanup, errDo := c.doHTTP(ctx, req)
 	if errDo != nil {
-		return pluginapi.HTTPResponse{}, errDo
+		return pluginapi.HTTPResponse{}, c.redactAuthError(errDo)
 	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
-			log.Warnf("pluginhost: response body close error: %v", errClose)
+			log.Warnf("pluginhost: response body close error: %v", c.redactAuthError(errClose))
 		}
 		if cleanup != nil {
 			cleanup()
@@ -97,6 +97,7 @@ func (c *hostHTTPClient) Do(ctx context.Context, req pluginapi.HTTPRequest) (plu
 		helps.AppendAPIResponseChunk(ctx, cfg, result.Body)
 	}
 	if errReadAll != nil {
+		errReadAll = c.redactAuthError(errReadAll)
 		helps.RecordAPIResponseError(ctx, cfg, errReadAll)
 		return pluginapi.HTTPResponse{}, fmt.Errorf("read host http response: %w", errReadAll)
 	}
@@ -185,6 +186,7 @@ func (c *hostHTTPClient) doHTTP(ctx context.Context, req pluginapi.HTTPRequest) 
 		if cleanup != nil {
 			cleanup()
 		}
+		errDo = c.redactAuthError(errDo)
 		helps.RecordAPIResponseError(ctx, cfg, errDo)
 		return nil, cfg, nil, fmt.Errorf("execute host http request: %w", errDo)
 	}
@@ -205,7 +207,7 @@ func (c *hostHTTPClient) recordHTTPRequest(ctx context.Context, cfg *config.Conf
 			provider = c.auth.Provider
 		}
 	}
-	helps.RecordAPIRequest(ctx, cfg, helps.UpstreamRequestLog{
+	helps.RecordAPIRequest(ctx, cfg, c.redactAuthRequestLog(helps.UpstreamRequestLog{
 		URL:       req.URL.String(),
 		Method:    req.Method,
 		Headers:   req.Header.Clone(),
@@ -215,7 +217,7 @@ func (c *hostHTTPClient) recordHTTPRequest(ctx context.Context, cfg *config.Conf
 		AuthLabel: authLabel,
 		AuthType:  authType,
 		AuthValue: authValue,
-	})
+	}))
 }
 
 func (h *Host) currentRuntimeConfig() *config.Config {

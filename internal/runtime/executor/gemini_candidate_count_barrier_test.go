@@ -21,36 +21,69 @@ import (
 type candidateCountExecutor interface {
 	Execute(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error)
 	ExecuteStream(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error)
+	CountTokens(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error)
 }
 
-func candidateCountOverride(path string) *config.Config {
-	return &config.Config{Payload: config.PayloadConfig{Override: []config.PayloadRule{{
-		Models: []config.PayloadModelRule{{Name: "*"}},
-		Params: map[string]any{path: 2},
-	}}}}
+func candidateCountConfig(mode, path string) *config.Config {
+	cfg := &config.Config{}
+	switch mode {
+	case "override":
+		cfg.Payload.Override = []config.PayloadRule{{
+			Models: []config.PayloadModelRule{{Name: "*"}},
+			Params: map[string]any{path: 2},
+		}}
+	case "filter":
+		cfg.Payload.Filter = []config.PayloadFilterRule{{
+			Models: []config.PayloadModelRule{{Name: "*"}}, Params: []string{path},
+		}}
+	}
+	return cfg
 }
 
-func TestGeminiCandidateCountAfterPayloadOverride(t *testing.T) {
+func assertCandidateCount(t *testing.T, wire []byte, path, mode string, countTokens bool) {
+	t.Helper()
+	value := gjson.GetBytes(wire, path)
+	if mode == "filter" || (mode == "default" && countTokens) {
+		if value.Exists() {
+			t.Fatalf("outbound %s was restored after removal; body=%s", path, wire)
+		}
+		return
+	}
+	want := int64(1)
+	if mode == "override" {
+		want = 2
+	}
+	if !value.Exists() || value.Int() != want {
+		t.Fatalf("outbound %s = %s, want %d; body=%s", path, value.Raw, want, wire)
+	}
+}
+
+func TestGeminiCandidateCountBeforePayloadRules(t *testing.T) {
 	for _, provider := range []string{"gemini", "vertex-key", "vertex-service-account"} {
 		for _, interactions := range []bool{false, true} {
-			for _, stream := range []bool{false, true} {
-				name := fmt.Sprintf("%s/interactions=%t/stream=%t", provider, interactions, stream)
-				t.Run(name, func(t *testing.T) {
-					path := "generationConfig.candidateCount"
-					if interactions {
-						path = "generation_config.candidate_count"
-					}
-					cfg := candidateCountOverride(path)
-					var executor candidateCountExecutor = NewGeminiExecutor(cfg)
-					if provider != "gemini" {
-						executor = NewGeminiVertexExecutor(cfg)
-					}
-					auth := candidateCountAuth(t, provider, interactions)
-					wire := captureCandidateCountRequest(t, executor, auth, interactions, stream)
-					if got := gjson.GetBytes(wire, path).Int(); got != 1 {
-						t.Fatalf("outbound %s = %d, want 1 after override; body=%s", path, got, wire)
-					}
-				})
+			for _, action := range []string{"execute", "stream", "count-tokens"} {
+				if interactions && action == "count-tokens" {
+					continue
+				}
+				for _, mode := range []string{"default", "override", "filter"} {
+					name := fmt.Sprintf("%s/interactions=%t/%s/%s", provider, interactions, action, mode)
+					t.Run(name, func(t *testing.T) {
+						path := "generationConfig.candidateCount"
+						if interactions {
+							path = "generation_config.candidate_count"
+						}
+						cfg := candidateCountConfig(mode, path)
+						var executor candidateCountExecutor = NewGeminiExecutor(cfg)
+						if provider != "gemini" {
+							executor = NewGeminiVertexExecutor(cfg)
+						} else if interactions {
+							executor = NewGeminiInteractionsExecutor(cfg)
+						}
+						auth := candidateCountAuth(t, provider, interactions)
+						wire := captureCandidateCountRequest(t, executor, auth, interactions, action)
+						assertCandidateCount(t, wire, path, mode, action == "count-tokens")
+					})
+				}
 			}
 		}
 	}
@@ -65,6 +98,9 @@ func candidateCountAuth(t *testing.T, provider string, interactions bool) *clipr
 			"api_key": "test-key", "base_url": "https://candidate-count.invalid",
 		},
 		Metadata: map[string]any{"interactions": interactions},
+	}
+	if provider == "gemini" && interactions {
+		auth.Provider = "gemini-interactions"
 	}
 	if provider != "vertex-service-account" {
 		return auth
@@ -81,7 +117,7 @@ func candidateCountAuth(t *testing.T, provider string, interactions bool) *clipr
 	return auth
 }
 
-func captureCandidateCountRequest(t *testing.T, executor candidateCountExecutor, auth *cliproxyauth.Auth, interactions, stream bool) []byte {
+func captureCandidateCountRequest(t *testing.T, executor candidateCountExecutor, auth *cliproxyauth.Auth, interactions bool, action string) []byte {
 	t.Helper()
 	var wire []byte
 	stop := errors.New("captured outbound candidate-count request")
@@ -97,16 +133,19 @@ func captureCandidateCountRequest(t *testing.T, executor candidateCountExecutor,
 		return nil, stop
 	})
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", transport)
-	req := cliproxyexecutor.Request{Model: "gemini-3.1-pro-preview", Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)}
+	req := cliproxyexecutor.Request{Model: "gemini-3.1-pro-preview", Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"candidateCount":2}}`)}
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini}
 	if interactions {
-		req.Payload = []byte(`{"model":"gemini-3.1-pro-preview","input":"hi"}`)
+		req.Payload = []byte(`{"model":"gemini-3.1-pro-preview","input":"hi","generation_config":{"candidate_count":2}}`)
 		opts.SourceFormat = sdktranslator.FormatInteractions
 	}
 	var errExecute error
-	if stream {
+	switch action {
+	case "stream":
 		_, errExecute = executor.ExecuteStream(ctx, auth, req, opts)
-	} else {
+	case "count-tokens":
+		_, errExecute = executor.CountTokens(ctx, auth, req, opts)
+	default:
 		_, errExecute = executor.Execute(ctx, auth, req, opts)
 	}
 	if !errors.Is(errExecute, stop) {
@@ -115,50 +154,56 @@ func captureCandidateCountRequest(t *testing.T, executor candidateCountExecutor,
 	return wire
 }
 
-func TestAIStudioCandidateCountAfterPayloadOverride(t *testing.T) {
-	executor := NewAIStudioExecutor(candidateCountOverride("generationConfig.candidateCount"), "aistudio", nil)
-	for _, stream := range []bool{false, true} {
-		body, translated, errTranslate := executor.translateRequest(context.Background(), cliproxyexecutor.Request{
-			Model: "gemini-3.1-pro-preview", Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`),
-		}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini}, stream)
-		if errTranslate != nil {
-			t.Fatal(errTranslate)
-		}
-		for _, payload := range [][]byte{body, translated.payload} {
-			if got := gjson.GetBytes(payload, "generationConfig.candidateCount").Int(); got != 1 {
-				t.Fatalf("candidate count = %d, want 1 after override; body=%s", got, payload)
-			}
+func TestAIStudioCandidateCountBeforePayloadRules(t *testing.T) {
+	for _, mode := range []string{"default", "override", "filter"} {
+		for _, action := range []string{"execute", "stream", "countTokens"} {
+			t.Run(mode+"/"+action, func(t *testing.T) {
+				executor := NewAIStudioExecutor(candidateCountConfig(mode, "generationConfig.candidateCount"), "aistudio", nil)
+				body, translated, errTranslate := executor.translateRequest(context.Background(), cliproxyexecutor.Request{
+					Model:    "gemini-3.1-pro-preview",
+					Payload:  []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"candidateCount":2}}`),
+					Metadata: map[string]any{"action": action},
+				}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini}, action == "stream")
+				if errTranslate != nil {
+					t.Fatal(errTranslate)
+				}
+				for _, payload := range [][]byte{body, translated.payload} {
+					assertCandidateCount(t, payload, "generationConfig.candidateCount", mode, action == "countTokens")
+				}
+			})
 		}
 	}
 }
 
-func TestAntigravityCandidateCountAfterPayloadFinalizer(t *testing.T) {
-	for _, schema := range []bool{false, true} {
-		for _, stream := range []bool{false, true} {
-			t.Run(fmt.Sprintf("schema=%t/stream=%t", schema, stream), func(t *testing.T) {
-				cfg := candidateCountOverride("generationConfig.candidateCount")
-				req := cliproxyexecutor.Request{Model: "gemini-3.1-pro-preview"}
-				body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
-				if schema {
-					body = []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"functionDeclarations":[{"name":"test","parameters":{"type":"object","properties":{"value":{"type":"string"}}}}]}]}`)
-				}
-				ctx := helps.WithPayloadFinalizer(context.Background(), helps.NewPayloadFinalizer(cfg, "antigravity", req.Model, "antigravity", "request", body, req, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini}))
-				auth := &cliproxyauth.Auth{Metadata: map[string]any{"project_id": "candidate-count-test"}}
-				request, errBuild := NewAntigravityExecutor(cfg).buildRequest(ctx, auth, "token", req.Model, body, stream, "", "https://candidate-count.invalid")
-				if errBuild != nil {
-					t.Fatal(errBuild)
-				}
-				wire, errRead := io.ReadAll(request.Body)
-				if errRead != nil {
-					t.Fatal(errRead)
-				}
-				if errClose := request.Body.Close(); errClose != nil {
-					t.Fatal(errClose)
-				}
-				if got := gjson.GetBytes(wire, "request.generationConfig.candidateCount").Int(); got != 1 {
-					t.Fatalf("candidate count = %d, want 1 after finalizer; body=%s", got, wire)
-				}
-			})
+func TestAntigravityCandidateCountBeforePayloadFinalizer(t *testing.T) {
+	for _, mode := range []string{"default", "override", "filter"} {
+		for _, schema := range []bool{false, true} {
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/schema=%t/stream=%t", mode, schema, stream), func(t *testing.T) {
+					cfg := candidateCountConfig(mode, "generationConfig.candidateCount")
+					req := cliproxyexecutor.Request{Model: "gemini-3.1-pro-preview"}
+					body := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"candidateCount":2}}}`)
+					if schema {
+						body = []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"candidateCount":2},"tools":[{"functionDeclarations":[{"name":"test","parameters":{"type":"object","properties":{"value":{"type":"string"}}}}]}]}}`)
+					}
+					ctx := helps.WithPayloadFinalizer(context.Background(), helps.NewPayloadFinalizer(cfg, "antigravity", req.Model, "antigravity", "request", body, req, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini}))
+					auth := &cliproxyauth.Auth{Metadata: map[string]any{"project_id": "candidate-count-test"}}
+					for attempt := 0; attempt < 2; attempt++ {
+						request, errBuild := NewAntigravityExecutor(cfg).buildRequest(ctx, auth, "token", req.Model, body, stream, "", "https://candidate-count.invalid")
+						if errBuild != nil {
+							t.Fatal(errBuild)
+						}
+						wire, errRead := io.ReadAll(request.Body)
+						if errRead != nil {
+							t.Fatal(errRead)
+						}
+						if errClose := request.Body.Close(); errClose != nil {
+							t.Fatal(errClose)
+						}
+						assertCandidateCount(t, wire, "request.generationConfig.candidateCount", mode, false)
+					}
+				})
+			}
 		}
 	}
 }
